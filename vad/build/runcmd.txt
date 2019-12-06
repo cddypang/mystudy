@@ -1,0 +1,3 @@
+
+./vadtool --config=nnet3-offline.cfg cvte/exp/chain/tdnn/final.mdl cvte/exp/chain/tdnn/graph/HCLG.fst 'ark:|lattice-scale --acoustic-scale=10.0 ark:- ark,t:lat1-scale'
+

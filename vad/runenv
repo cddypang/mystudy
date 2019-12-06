@@ -1,0 +1,2 @@
+export LD_LIBRARY_PATH=$HOME/speech/kaldi/src/lib:$HOME/speech/kaldi/tools/openfst/lib:$LD_LIBRARY_PATH
+

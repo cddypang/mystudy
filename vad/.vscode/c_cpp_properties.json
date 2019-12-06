@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Linux GCC",
+            "intelliSenseMode": "clang-x64",
+            "compilerPath": "/usr/bin/gcc",
+            "includePath": [
+                "${workspaceFolder}",
+                "${workspaceFolder}/../../kaldi/src",
+                "${workspaceFolder}/../../kaldi/tools/openfst/include"
+            ],
+            "defines": [],
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+        }
+    ],
+    "version": 4
+}
