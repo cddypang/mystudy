@@ -5,6 +5,7 @@
 #include "matrix/kaldi-matrix.h"
 #include "transform/transform-common.h"
 #include "ivector/voice-activity-detection.h"
+#include "transform/cmvn.h"
 
 #include "base/kaldi-common.h"
 #include "util/common-utils.h"
@@ -79,6 +80,28 @@ void GetOutput(OnlineFeatureInterface *a,
     }
     cached_frames.clear();
   }
+  cache.ClearCache();
+}
+
+void GetSDOutput(OnlineFeatureInterface *a,
+               std::list<Vector<BaseFloat>* >& feat_frames) 
+{
+  feat_frames.clear();
+  int32 dim = a->Dim();
+  int32 frame_idx = 0;
+  OnlineCacheFeature cache(a);
+  
+  int32 cache_cnt = cache.NumFramesReady();
+
+  while (frame_idx < cache_cnt) {
+    Vector<BaseFloat> garbage(dim);
+    cache.GetFrame(frame_idx, &garbage);
+    feat_frames.push_back(new Vector<BaseFloat>(garbage));
+    if (cache.IsLastFrame(frame_idx))
+      break;
+    frame_idx++;
+  }
+  KALDI_ASSERT(feat_frames.size() == a->NumFramesReady());
   cache.ClearCache();
 }
 
@@ -240,6 +263,29 @@ void TestOnlineFbank() {
 #endif
 }
 
+bool AccCmvnStatsWrapper(std::string utt,
+                         const MatrixBase<BaseFloat> &feats,
+                         RandomAccessBaseFloatVectorReader *weights_reader,
+                         Matrix<double> *cmvn_stats) {
+  if (!weights_reader->IsOpen()) {
+    AccCmvnStats(feats, NULL, cmvn_stats);
+    return true;
+  } else {
+    if (!weights_reader->HasKey(utt)) {
+      KALDI_WARN << "No weights available for utterance " << utt;
+      return false;
+    }
+    const Vector<BaseFloat> &weights = weights_reader->Value(utt);
+    if (weights.Dim() != feats.NumRows()) {
+      KALDI_WARN << "Weights for utterance " << utt << " have wrong dimension "
+                 << weights.Dim() << " vs. " << feats.NumRows();
+      return false;
+    }
+    AccCmvnStats(feats, &weights, cmvn_stats);
+    return true;
+  }
+}
+
 
 int main(int argc, char* argv[])
 {
@@ -343,76 +389,77 @@ int main(int argc, char* argv[])
   op.use_energy = true;
   op.mel_opts.num_bins = 40;
 
-  Fbank mfcc(op);
-  // compute mfcc offline
-  Matrix<BaseFloat> mfcc_feats;
-  mfcc.Compute(waveform, 1.0, &mfcc_feats);  // vtln not supported
-
   VadEnergyOptions opts;
   opts.vad_energy_threshold = 5.5;
   opts.vad_energy_mean_scale = 0.5;
 
-  // compare
-  // The test waveform is about 1.44s long, so
-  // we try to break it into from 5 pieces to 9(not essential to do so)
-  for (int32 num_piece = 5; num_piece < 6; num_piece++) 
+  OnlineFbank online_mfcc(op);
+  int32 num_piece = 5;
+  std::vector<int32> piece_length(num_piece, 0);
+  bool ret = RandomSplit(waveform.Dim(), &piece_length, num_piece);
+  KALDI_ASSERT(ret);
+  std::string utt = "uid" + std::to_string(num_piece);
+  std::string ws = "t,ark:vad-" + utt + ".ark";
+  int32 offset_start = 0;
+  std::list<Vector<BaseFloat>* > sd_feat_frames;
+
+  for (int32 i = 0; i < num_piece; i++) 
   {
-    OnlineFbank online_mfcc(op);
-    std::vector<int32> piece_length(num_piece, 0);
+    Vector<BaseFloat> wave_piece(
+      waveform.Range(offset_start, piece_length[i]));
+    online_mfcc.AcceptWaveform(wave.SampFreq(), wave_piece);
+    offset_start += piece_length[i];
+    
+    std::list<Vector<BaseFloat>* > feat_frames;
+    GetSDOutput(&online_mfcc, feat_frames);
+    sd_feat_frames.insert(sd_feat_frames.end(), feat_frames.begin(), feat_frames.end());
+    //Vector<BaseFloat> vad_result(online_mfcc_feats.NumRows());
+    //ComputeVadEnergy(opts, online_mfcc_feats, &vad_result);
+  }
+  online_mfcc.InputFinished();
 
-    bool ret = RandomSplit(waveform.Dim(), &piece_length, num_piece);
-    KALDI_ASSERT(ret);
+  std::list<Vector<BaseFloat>* > feat_frames;
+  GetSDOutput(&online_mfcc, feat_frames);
+  sd_feat_frames.insert(sd_feat_frames.end(), feat_frames.begin(), feat_frames.end());
 
-
-    std::string utt; // = "uid" + std::to_string(5);
-    std::string ws; // = "t,ark:vad-" + utt + ".ark";
-
-    int32 offset_start = 0;
-    for (int32 i = 0; i < num_piece; i++) {
-      Vector<BaseFloat> wave_piece(
-        waveform.Range(offset_start, piece_length[i]));
-      online_mfcc.AcceptWaveform(wave.SampFreq(), wave_piece);
-      offset_start += piece_length[i];
-      
-      Matrix<BaseFloat> online_mfcc_feats;
-      GetOutput(&online_mfcc, &online_mfcc_feats);
-      Vector<BaseFloat> vad_result(online_mfcc_feats.NumRows());
-      ComputeVadEnergy(opts, online_mfcc_feats, &vad_result);
-
-      utt = "uid" + std::to_string(i);
-      ws = "t,ark:vad-" + utt + ".ark";
-      BaseFloatVectorWriter vad_writer(ws);
-      vad_writer.Write(utt, vad_result);
+  Matrix<BaseFloat> online_feats;
+  if(!sd_feat_frames.empty())
+  {
+    online_feats.Resize(sd_feat_frames.size(), online_mfcc.Dim());
+    int idx = 0;
+    for (auto it(sd_feat_frames.begin()); it!=sd_feat_frames.end(); ++it) 
+    {
+      online_feats.CopyRowFromVec(**it, idx);
+      delete *it;
+      idx++;
     }
-    online_mfcc.InputFinished();
+    sd_feat_frames.clear();
 
-      Matrix<BaseFloat> online_mfcc_feats;
-      GetOutput(&online_mfcc, &online_mfcc_feats);
-      if(online_mfcc_feats.NumRows() > 0)
-      {
-        Vector<BaseFloat> vad_result(online_mfcc_feats.NumRows());
-        ComputeVadEnergy(opts, online_mfcc_feats, &vad_result);
-
-        utt = "uid" + std::to_string(num_piece);
-        ws = "t,ark:vad-" + utt + ".ark";
-        BaseFloatVectorWriter vad_writer(ws);
-        vad_writer.Write(utt, vad_result);
-      }
-    //AssertEqual(mfcc_feats, online_mfcc_feats);
+    Vector<BaseFloat> vad_result(online_feats.NumRows());
+    ComputeVadEnergy(opts, online_feats, &vad_result);
+    //utt = "uid" + std::to_string(num_piece);
+    //ws = "t,ark:vad-" + utt + ".ark";
+    BaseFloatVectorWriter vad_writer(ws);
+    vad_writer.Write(utt, vad_result);
   }
 
-  if (mfcc_feats.NumRows() > 0) 
+  Matrix<double> cmvn_stats;
+  InitCmvnStats(online_feats.NumCols(), &cmvn_stats);
+  AccCmvnStats(online_feats, NULL, &cmvn_stats);
+  ApplyCmvn(cmvn_stats, false, &online_feats);     
+
+  if (online_feats.NumRows() > 0) 
   {
     const Matrix<BaseFloat> *online_ivectors = NULL;
     const Vector<BaseFloat> *ivector = NULL;
     DecodableAmNnetSimple nnet_decodable(
       decodable_opts, trans_model, am_nnet,
-      mfcc_feats.ColRange(1, op.mel_opts.num_bins), 
+      online_feats.ColRange(1, op.mel_opts.num_bins), 
       ivector, online_ivectors,
       online_ivector_period, &compiler);
     double like;
     if (DecodeUtteranceLatticeFaster(
-      decoder, nnet_decodable, trans_model, word_syms, "utt01",
+      decoder, nnet_decodable, trans_model, word_syms, utt,
       decodable_opts.acoustic_scale, determinize, allow_partial,
       &alignment_writer, &words_writer, &compact_lattice_writer,
       &lattice_writer,

@@ -62,6 +62,7 @@ set(LDADD
   -lkaldi-lat
   -lkaldi-hmm
   -lkaldi-fstext
+  -lkaldi-transform
   -L${KALDI_DIR}/tools/openfst/lib
   -lfst
   -lpthread
