@@ -112,7 +112,7 @@ int get_wav(const char* pFile, char** pAudio, int* nAudioLen, int* nSampleRate, 
 		return -8;
 	}
 	fseek(fs, nHeadLen, SEEK_SET);
-	nDataReadLen = fread(*pAudio, *nAudioLen, 1, fs);
+	nDataReadLen = fread(*pAudio, 1, *nAudioLen, fs);
 	if (nDataReadLen != *nAudioLen)
 	{
 		free(*pAudio);
@@ -150,7 +150,7 @@ int get_pcm(const char* pFile, char** pAudio, int* nAudioLen)
 		return -3;
 	}
 	fseek(fs, 0L, SEEK_SET);
-	nDataReadLen = fread(*pAudio, *nAudioLen, 1, fs);
+	nDataReadLen = fread(*pAudio, 1, *nAudioLen, fs);
 	if (nDataReadLen != *nAudioLen)
 	{
 		free(*pAudio);
@@ -162,10 +162,15 @@ int get_pcm(const char* pFile, char** pAudio, int* nAudioLen)
 	return 1;
 }
 
-int asrtest(CYVOICE_HANDLE hd)
+int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 {
-	string filename = "./TestData/02FAC9DA80594A310FA1D2B961F8C118-1.wav";
-  std::string ext = filename.substr(filename.length()-4, 3);
+	if(wavfile.length() < 3)
+	{
+		printf("invalid filename, support [*.wav *.pcm]\n");
+		return -1;
+	}
+	const std::string& filename = wavfile;
+  std::string ext = filename.substr(filename.length()-3, 3);
 	char *audio = nullptr;
   int audiolen = 0;
   if(ext == "pcm")
@@ -176,7 +181,7 @@ int asrtest(CYVOICE_HANDLE hd)
   {
     int samp, bit_per_samp, chanel;
     get_wav(filename.c_str(), &audio, &audiolen, &samp, &bit_per_samp, (short*)&chanel);
-    if(samp != 16000 || bit_per_samp != 2 || chanel != 1)
+    if(samp != 16000 || bit_per_samp != 16 || chanel != 1)
     {
       printf("unsupport wave format!\n");
       return -1;
@@ -201,7 +206,7 @@ int asrtest(CYVOICE_HANDLE hd)
 	for (int i = 0; i < 1 ; i++)
 	{
 		{
-			int total_len = audiolen, idx = 0, offset = 44, trunk_size = 8000;
+			int total_len = audiolen, idx = 0, offset = 0, trunk_size = 8000;
 			uint32_t send_len = 0;
 			while(1)
 			{
@@ -244,6 +249,12 @@ int asrtest(CYVOICE_HANDLE hd)
 
 int main(int argc, char* argv[])
 {
+	if(argc != 2)
+	{
+		printf("./a.out wavfile");
+		return 0;
+	}
+	
   printf("app start\n");
   char cfg[64] = "./config.ini";
   cyVoiceInit(cfg);
@@ -253,7 +264,7 @@ int main(int argc, char* argv[])
   cyVoiceCreateInstanceEx(&hd);
   printf("lib create finish\n");
 
-  asrtest(hd);
+  asrtest(hd, argv[1]);
 
   cyVoiceReleaseInstance(hd);
   cyVoiceUninit();
