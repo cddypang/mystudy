@@ -179,11 +179,14 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
   }
   else if (ext == "wav")
   {
-    int samp, bit_per_samp, chanel;
-    get_wav(filename.c_str(), &audio, &audiolen, &samp, &bit_per_samp, (short*)&chanel);
+    int samp, bit_per_samp;
+		short chanel;
+    get_wav(filename.c_str(), &audio, &audiolen, &samp, &bit_per_samp, &chanel);
     if(samp != 16000 || bit_per_samp != 16 || chanel != 1)
     {
       printf("unsupport wave format!\n");
+			printf("file, sample: %d, bit_per_sample: %d, chanel: %d!\n",
+			  samp, bit_per_samp, chanel);
       return -1;
     }
   }
@@ -251,7 +254,7 @@ int main(int argc, char* argv[])
 {
 	if(argc != 2)
 	{
-		printf("./a.out wavfile");
+		printf("./a.out wavfile\n");
 		return 0;
 	}
 	

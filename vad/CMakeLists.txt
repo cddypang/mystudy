@@ -28,7 +28,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "/MT /Zi /DEBUG /O2")
 set(CMAKE_CXX_FLAGS_DEBUG "/MT /Zi /DEBUG /Od")
 ELSE ()
 set(CMAKE_C_FLAGS "-Wall -g ${CMAKE_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS "-Wall -g -std=c++11 -Wno-unused-local-typedefs -Wno-sign-compare ${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "-Wall -g -std=c++11 -Wno-writable-strings -Wno-unused-local-typedefs -Wno-sign-compare ${CMAKE_CXX_FLAGS}")
 ENDIF ()
 
 IF (UNIX)
@@ -51,11 +51,11 @@ ELSE ()
 set(LDADD_STATIC 
   ${KALDI_DIR}/src/feat/kaldi-feat.a
   ${KALDI_DIR}/src/matrix/kaldi-matrix.a
+  ${KALDI_DIR}/src/cudamatrix/kaldi-cudamatrix.a
   ${KALDI_DIR}/src/base/kaldi-base.a
   ${KALDI_DIR}/src/util/kaldi-util.a
   ${KALDI_DIR}/src/ivector/kaldi-ivector.a
   ${KALDI_DIR}/src/nnet3/kaldi-nnet3.a
-  ${KALDI_DIR}/src/cudamatrix/kaldi-cudamatrix.a
   ${KALDI_DIR}/src/decoder/kaldi-decoder.a
   ${KALDI_DIR}/src/lat/kaldi-lat.a
   ${KALDI_DIR}/src/hmm/kaldi-hmm.a
@@ -68,8 +68,26 @@ set(LDADD_STATIC
   -lpthread
   )
 
+IF(CMAKE_HOST_APPLE)
+find_library(Accelerate_UNIT Accelerate)
+if (NOT Accelerate_UNIT)
+    message(FATAL_ERROR "Accelerate not found")
+endif()
+set(ATLASLIBS 
+  ${Accelerate_UNIT} -ldl
+  )
+target_compile_options(${LIBASR} PUBLIC -fPIC)
+ELSE()
+set(ATLASLIBS 
+    /usr/lib/libatlas.so.3 
+    /usr/lib/libf77blas.so.3 
+    /usr/lib/libcblas.so.3 
+    /usr/lib/liblapack_atlas.so.3 
+    -Wl,-rpath=/usr/lib
+    )
 target_compile_options(${LIBASR} PUBLIC -shared -fPIC)
-target_link_libraries(${LIBASR} ${LDADD_STATIC})
+ENDIF()
+target_link_libraries(${LIBASR} ${LDADD_STATIC} ${ATLASLIBS})
 ENDIF ()
 
 ################# LIBTEST_APP ######################
@@ -82,30 +100,26 @@ add_executable(${LIBTEST} ${asrtest_SOURCES})
 
 IF (WIN32)
 
-ELSE ()
-set(ATLASLIBS 
-    /usr/lib/libatlas.so.3 
-    /usr/lib/libf77blas.so.3 
-    /usr/lib/libcblas.so.3 
-    /usr/lib/liblapack_atlas.so.3 
-    -Wl,-rpath=/usr/lib
-    )
-
-set(LDADD_TEST 
-  -L/usr/local/cuda/lib64
-  -lcublas
-  -lcurand
-  -lcudart
-  -lcusparse
-  #${KALDI_DIR}/tools/openfst/lib/libfst.a
-  -L${KALDI_DIR}/tools/openfst/lib  ### TODO !!!
-  -lfst
-  #dynamic
-  -lpthread
-  )
-
+ELSE ()  ## UNIX
+IF(CMAKE_HOST_APPLE)
+target_compile_options(${LIBTEST} PUBLIC -fPIC)
+ELSE()
 target_compile_options(${LIBTEST} PUBLIC -shared -fPIC)
-target_link_libraries(${LIBTEST} ${LIBASR} ${LDADD_TEST} ${ATLASLIBS})
+ENDIF()
+#set(LDADD_TEST 
+#  -L/usr/local/cuda/lib64
+#  -lcublas
+#  -lcurand
+#  -lcudart
+#  -lcusparse
+#  #${KALDI_DIR}/tools/openfst/lib/libfst.a
+#  -L${KALDI_DIR}/tools/openfst/lib  ### TODO !!!
+#  -lfst
+#  #dynamic
+#  -lpthread
+#  )
+
+target_link_libraries(${LIBTEST} ${LIBASR})
 ENDIF ()
 
 

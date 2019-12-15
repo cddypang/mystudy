@@ -108,7 +108,8 @@ void CAsrHandler::Init()
               "option");
 
   int argc = 5;
-  char* argv[argc] = {
+  //char* argv[argc] = {
+  char* argv[5] = {
     "libasr",
     "--config=nnet3-offline.cfg",
     "cvte/exp/chain/tdnn/final.mdl",
