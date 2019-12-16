@@ -27,8 +27,14 @@ add_definitions(-DNOMINMAX)
 set(CMAKE_CXX_FLAGS_RELEASE "/MT /Zi /DEBUG /O2")
 set(CMAKE_CXX_FLAGS_DEBUG "/MT /Zi /DEBUG /Od")
 ELSE ()
+set(CXX_IGN_WARNINGS 
+  " -Wno-write-strings\
+    -Wno-unused-but-set-variable\
+    -Wno-writable-strings\
+    -Wno-unused-local-typedefs\
+    -Wno-sign-compare ")
 set(CMAKE_C_FLAGS "-Wall -g ${CMAKE_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS "-Wall -g -std=c++11 -Wno-writable-strings -Wno-unused-local-typedefs -Wno-sign-compare ${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "-Wall -g -std=c++11 ${CXX_IGN_WARNINGS} ${CMAKE_CXX_FLAGS}")
 ENDIF ()
 
 IF (UNIX)
@@ -103,23 +109,18 @@ IF (WIN32)
 ELSE ()  ## UNIX
 IF(CMAKE_HOST_APPLE)
 target_compile_options(${LIBTEST} PUBLIC -fPIC)
+target_link_libraries(${LIBTEST} ${LIBASR})
 ELSE()
 target_compile_options(${LIBTEST} PUBLIC -shared -fPIC)
+set(LDADD_CUDA
+  -L/usr/local/cuda/lib64
+  -lcublas
+  -lcurand
+  -lcudart
+  -lcusparse
+  )
+target_link_libraries(${LIBTEST} ${LIBASR} ${LDADD_CUDA})
 ENDIF()
-#set(LDADD_TEST 
-#  -L/usr/local/cuda/lib64
-#  -lcublas
-#  -lcurand
-#  -lcudart
-#  -lcusparse
-#  #${KALDI_DIR}/tools/openfst/lib/libfst.a
-#  -L${KALDI_DIR}/tools/openfst/lib  ### TODO !!!
-#  -lfst
-#  #dynamic
-#  -lpthread
-#  )
-
-target_link_libraries(${LIBTEST} ${LIBASR})
 ENDIF ()
 
 
