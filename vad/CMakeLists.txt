@@ -111,6 +111,10 @@ IF(CMAKE_HOST_APPLE)
 target_compile_options(${LIBTEST} PUBLIC -fPIC)
 target_link_libraries(${LIBTEST} ${LIBASR})
 ELSE()
+include_directories(
+  /usr/local/cuda/include
+  )
+set(CMAKE_CXX_FLAGS "-DHAVE_CUDA=1 ${CMAKE_CXX_FLAGS}")
 target_compile_options(${LIBTEST} PUBLIC -shared -fPIC)
 set(LDADD_CUDA
   -L/usr/local/cuda/lib64

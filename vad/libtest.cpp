@@ -244,6 +244,8 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 
     ifret = cyVoiceStop(hd);
 
+		uint16_t statusCode;
+    ifret = cyVoiceSearchForward(hd, &statusCode);
     ifret = cyVoiceQueryResult(hd, nullptr, nullptr, nullptr);
 	}
 
@@ -259,7 +261,7 @@ int main(int argc, char* argv[])
 	}
 	
   printf("app start\n");
-  char cfg[64] = "./config.ini";
+  char cfg[64] = "nnet3-offline.cfg";   //"./config.ini";
   cyVoiceInit(cfg);
   printf("lib init \n");
 
