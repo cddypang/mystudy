@@ -1,23 +1,15 @@
 #include "cyVoice.h"
 #include <iostream>
-#include "feat/feature-mfcc.h"
-#include "feat/feature-fbank.h"
-#include "feat/online-feature.h"
-#include "feat/wave-reader.h"
-#include "matrix/kaldi-matrix.h"
-#include "transform/transform-common.h"
-#include "ivector/voice-activity-detection.h"
-#include "transform/cmvn.h"
-
-#include "base/kaldi-common.h"
-#include "util/common-utils.h"
-#include "tree/context-dep.h"
-#include "hmm/transition-model.h"
+#include "online2/online-nnet2-feature-pipeline.h"
+#include "online2/onlinebin-util.h"
+#include "online2/online-timing.h"
+#include "online2/online-endpoint.h"
 #include "fstext/fstext-lib.h"
-#include "decoder/decoder-wrappers.h"
-#include "nnet3/nnet-am-decodable-simple.h"
+#include "lat/lattice-functions.h"
+#include "util/kaldi-thread.h"
 #include "nnet3/nnet-utils.h"
-#include "base/timer.h"
+#include "feat/online-feature.h"
+#include "nnet3-decoding.h"
 
 using namespace kaldi;
 using namespace kaldi::nnet3;
@@ -25,100 +17,6 @@ typedef kaldi::int32 int32;
 using fst::SymbolTable;
 using fst::Fst;
 using fst::StdArc;
-
-class CAsrHandler
-{
-public:
-  CAsrHandler();
-  virtual ~CAsrHandler();
-
-//private:
-  void Init();
-  void Uninit();
-
-  bool allow_partial;
-
-  std::string ivector_rspecifier;
-  std::string online_ivector_rspecifier;
-  std::string utt2spk_rspecifier;
-
-  std::string lattice_wspecifier;
-  std::string words_wspecifier;
-  std::string alignment_wspecifier;  
-
-  double tot_like;
-  kaldi::int64 frame_count;
-
-  LatticeFasterDecoder *lat_decoder;
-  CachingOptimizingCompiler *compiler;
-  DecodableAmNnetSimple *nnet_decodable;
-  CompactLatticeWriter compact_lattice_writer;
-  LatticeWriter lattice_writer;
-
-  //feat
-  FbankOptions fbank_op;
-  VadEnergyOptions vad_opts;
-  OnlineFbank *online_fbank;
-  std::list<Vector<BaseFloat>* > sd_feat_frames;
-  std::vector<Vector<BaseFloat>* > sd_vad_results;
-  Matrix<BaseFloat> online_feats;
-};
-
-CAsrHandler::CAsrHandler()
-{
-  Init();
-}
-
-CAsrHandler::~CAsrHandler()
-{
-  Uninit();
-}
-
-void CAsrHandler::Init()
-{
-  lattice_wspecifier = "ark:|lattice-scale --acoustic-scale=10.0 ark:- ark,t:lat1-scale";
-  words_wspecifier = "";
-  alignment_wspecifier = "";
-}
-
-void CAsrHandler::Uninit()
-{
-  if(online_fbank)
-    delete online_fbank;
-  if(lat_decoder)
-    delete lat_decoder;
-  if(compiler)
-    delete compiler;
-  if(nnet_decodable)
-    delete nnet_decodable;
-  
-  online_fbank = nullptr;
-  lat_decoder = nullptr;
-  compiler = nullptr;
-  nnet_decodable = nullptr;
-}
-
-void GetSDOutput(OnlineFeatureInterface *a,
-               std::list<Vector<BaseFloat>* >& feat_frames) 
-{
-  feat_frames.clear();
-  int32 dim = a->Dim();
-  int32 frame_idx = 0;
-  OnlineCacheFeature cache(a);
-  
-  int32 cache_cnt = cache.NumFramesReady();
-
-  while (frame_idx < cache_cnt) {
-    Vector<BaseFloat> garbage(dim);
-    cache.GetFrame(frame_idx, &garbage);
-    feat_frames.push_back(new Vector<BaseFloat>(garbage));
-    if (cache.IsLastFrame(frame_idx))
-      break;
-    frame_idx++;
-  }
-  KALDI_ASSERT(feat_frames.size() == a->NumFramesReady());
-  cache.ClearCache();
-}
 
 class CAsrModuleManager
 {
@@ -148,11 +46,36 @@ public:
 
   void Init(const std::string& cfgfile)
   {
+    chunk_length_secs = 0.18;
+    do_endpointing = false;
+    online = true;
+
     po = new ParseOptions("libasr");
-    lat_decoder_config.Register(po);
-    decodable_opts.Register(po);
+
     po->Register("use-gpu", &use_gpu,
             "yes|no|optional|wait, only has effect if compiled with CUDA");
+    po->Register("chunk-length", &chunk_length_secs,
+                "Length of chunk size in seconds, that we process.  Set to <= 0 "
+                "to use all input in one chunk.");
+    po->Register("do-endpointing", &do_endpointing,
+                "If true, apply endpoint detection");
+    po->Register("online", &online,
+                "You can set this to false to disable online iVector estimation "
+                "and have all the data for each utterance used, even at "
+                "utterance start.  This is useful where you just want the best "
+                "results and don't care about online operation.  Setting this to "
+                "false has the same effect as setting "
+                "--use-most-recent-ivector=true and --greedy-ivector-extractor=true "
+                "in the file given to --ivector-extraction-config, and "
+                "--chunk-length=-1.");
+    // po->Register("num-threads-startup", &g_num_threads,
+    //             "Number of threads used when initializing iVector extractor.");
+
+    feature_opts.Register(po);
+    decodable_opts.Register(po);
+    decoder_opts.Register(po);
+    endpoint_opts.Register(po);
+
     int argc = 2;
     char* argv[argc];
     for(int i=0; i<argc; i++)
@@ -189,6 +112,16 @@ public:
   }
 
 //member
+  OnlineNnet2FeaturePipelineConfig feature_opts;
+  nnet3::NnetSimpleLoopedComputationOptions decodable_opts;
+  LatticeFasterDecoderConfig decoder_opts;
+  OnlineEndpointConfig endpoint_opts;
+  BaseFloat chunk_length_secs; // = 0.18;
+  bool do_endpointing; // = false;
+  bool online; // = true;
+
+////////////////////////////////////////////////
+
   std::string use_gpu;
   std::string am_module_file;
   std::string fst_file;
@@ -199,14 +132,132 @@ public:
   Fst<StdArc> *decode_fst;
   fst::SymbolTable *word_syms;
 
-  LatticeFasterDecoderConfig lat_decoder_config;
-  NnetSimpleComputationOptions decodable_opts;
+
   ParseOptions* po;
 };
 
-////////////////////////////////////////////////////////////////////
-
 CAsrModuleManager *g_module_mng = nullptr;
+
+class CAsrHandler
+{
+public:
+  CAsrHandler() 
+  {
+    Init();
+  }
+  virtual ~CAsrHandler() 
+  {
+    Uninit();
+  }
+
+//private:
+  void Init();
+  void Uninit();
+
+  bool allow_partial;
+  bool bstart = false;
+  bool bstop = false;
+
+  std::string ivector_rspecifier;
+  std::string online_ivector_rspecifier;
+  std::string utt2spk_rspecifier;
+
+  CompactLatticeWriter compact_lattice_writer;
+  LatticeWriter lattice_writer;
+  std::string lattice_wspecifier;
+  std::string words_wspecifier;
+  std::string alignment_wspecifier; 
+
+  nnet3::DecodableNnetSimpleLoopedInfo* decodable_info;
+  owl::XSingleUtteranceNnet3Decoder* decoder;
+  
+  FbankOptions fbank_op;
+  OnlineCmvnOptions cmvn_opts;
+  OnlineCmvn* online_cmvn;
+  owl::XOnlineMatrixFeature* feat_online;
+};
+
+void CAsrHandler::Init()
+{
+  lattice_wspecifier = "ark:|lattice-scale --acoustic-scale=10.0 ark:- ark,t:lat1-scale";
+  words_wspecifier = "";
+  alignment_wspecifier = ""; 
+
+  //fbank
+  fbank_op.use_energy = false;
+  fbank_op.mel_opts.num_bins = 40;  
+  // feat_info->feature_type = "fbank";
+  // //feat_info->fbank_opts.use_energy = true;
+  // feat_info->fbank_opts.mel_opts.num_bins = 40;
+  // feat_info->fbank_opts.frame_opts.samp_freq = 16000;
+  // feat_info->use_ivectors = true;
+  // feat_info->ivector_extractor_info.global_cmvn_stats.Resize(2, 
+  //     feat_info->fbank_opts.mel_opts.num_bins + 1);
+  // feat_info->ivector_extractor_info.cmvn_opts.normalize_mean = true;
+  // feat_info->ivector_extractor_info.cmvn_opts.normalize_variance = false;
+  // //feat_info->ivector_extractor_info.cmvn_opts.cmn_window = 600;  //6s
+  // //feat_info->ivector_extractor_info.max_remembered_frames = 600;
+
+  decodable_info = new nnet3::DecodableNnetSimpleLoopedInfo(g_module_mng->decodable_opts,
+                                                        &g_module_mng->am_nnet);
+
+  feat_online = new owl::XOnlineMatrixFeature(3, fbank_op.frame_opts.frame_shift_ms, fbank_op.mel_opts.num_bins);
+  online_cmvn = new OnlineCmvn(cmvn_opts, feat_online);
+
+  decoder = new owl::XSingleUtteranceNnet3Decoder(g_module_mng->decoder_opts, g_module_mng->trans_model,
+                                            *decodable_info,
+                                            *g_module_mng->decode_fst, online_cmvn);
+
+  
+}
+
+void CAsrHandler::Uninit()
+{
+  if(online_cmvn)
+  {
+    delete online_cmvn;
+    online_cmvn = nullptr;
+  }
+  if(feat_online)
+  {
+    delete feat_online;
+    feat_online = nullptr;
+  }
+  if(decodable_info)
+  {
+    delete decodable_info;
+    decodable_info = nullptr;
+  }
+  if(decoder)
+  {
+    delete decoder;
+    decoder = nullptr;
+  }
+}
+
+void GetSDOutput(OnlineFeatureInterface *a,
+               std::list<Vector<BaseFloat>* >& feat_frames) 
+{
+  feat_frames.clear();
+  int32 dim = a->Dim();
+  int32 frame_idx = 0;
+  OnlineCacheFeature cache(a);
+  
+  int32 cache_cnt = cache.NumFramesReady();
+
+  while (frame_idx < cache_cnt) {
+    Vector<BaseFloat> garbage(dim);
+    cache.GetFrame(frame_idx, &garbage);
+    feat_frames.push_back(new Vector<BaseFloat>(garbage));
+    if (cache.IsLastFrame(frame_idx))
+      break;
+    frame_idx++;
+  }
+  KALDI_ASSERT(feat_frames.size() == a->NumFramesReady());
+  cache.ClearCache();
+}
+
+////////////////////////////////////////////////////////////////////
 
 int16_t cyVoiceInit(char *configFile)
 {
@@ -251,14 +302,6 @@ int16_t cyVoiceCreateInstance(CYVOICE_HANDLE *handle)
 int16_t cyVoiceCreateInstanceEx(CYVOICE_HANDLE *handle)
 {
   CAsrHandler* hd = new CAsrHandler();
-
-  // this compiler object allows caching of computations across
-  // different utterances.
-  hd->compiler = new CachingOptimizingCompiler(g_module_mng->am_nnet.GetNnet(),
-                                    g_module_mng->decodable_opts.optimize_config);
-
-  hd->lat_decoder = new LatticeFasterDecoder(*(g_module_mng->decode_fst), g_module_mng->lat_decoder_config);
-
   *handle = hd;
   return CYVOICE_EXIT_SUCCESS;
 }
@@ -476,25 +519,18 @@ int16_t cyVoiceStart(CYVOICE_HANDLE handle)
   if(handle)
   {
     CAsrHandler* hd = (CAsrHandler*)handle;
-    hd->fbank_op.use_energy = true;
-    hd->fbank_op.mel_opts.num_bins = 40;
+    hd->bstart = true;
 
-    hd->vad_opts.vad_energy_threshold = 5.5;
-    hd->vad_opts.vad_energy_mean_scale = 0.5;
+    // Int32VectorWriter words_writer(hd->words_wspecifier);
+    // Int32VectorWriter alignment_writer(hd->alignment_wspecifier);
 
-    hd->online_fbank = new OnlineFbank(hd->fbank_op);
+    // bool determinize = g_module_mng->lat_decoder_config.determinize_lattice;
 
-    Int32VectorWriter words_writer(hd->words_wspecifier);
-    Int32VectorWriter alignment_writer(hd->alignment_wspecifier);
-
-    bool determinize = g_module_mng->lat_decoder_config.determinize_lattice;
-
-    if (! (determinize ? hd->compact_lattice_writer.Open(hd->lattice_wspecifier)
-         : hd->lattice_writer.Open(hd->lattice_wspecifier)))
-    KALDI_ERR << "Could not open table for writing lattices: "
-               << hd->lattice_wspecifier;
+    // if (! (determinize ? hd->compact_lattice_writer.Open(hd->lattice_wspecifier)
+    //      : hd->lattice_writer.Open(hd->lattice_wspecifier)))
+    // KALDI_ERR << "Could not open table for writing lattices: "
+    //            << hd->lattice_wspecifier;
     
-    hd->lat_decoder->InitDecoding();
   }
 
   return CYVOICE_EXIT_SUCCESS;
@@ -531,48 +567,8 @@ int16_t cyVoiceStop(CYVOICE_HANDLE handle)
   if(handle)
   {
     CAsrHandler* hd = (CAsrHandler*)handle;
-
-    hd->online_fbank->InputFinished();
-
-    std::list<Vector<BaseFloat>* > feat_frames;
-    GetSDOutput(hd->online_fbank, feat_frames);
-    hd->sd_feat_frames.insert(hd->sd_feat_frames.end(), feat_frames.begin(), feat_frames.end());
-
-    
-    if(!hd->sd_feat_frames.empty())
-    {
-      hd->online_feats.Resize(hd->sd_feat_frames.size(), hd->online_fbank->Dim());
-      int idx = 0;
-      for (auto it(hd->sd_feat_frames.begin()); it!=hd->sd_feat_frames.end(); ++it) 
-      {
-        hd->online_feats.CopyRowFromVec(**it, idx);
-        delete *it;
-        idx++;
-      }
-      hd->sd_feat_frames.clear();
-
-      //Vector<BaseFloat> vad_result(online_feats.NumRows());
-      //ComputeVadEnergy(opts, online_feats, &vad_result);
-      //utt = "uid" + std::to_string(num_piece);
-      //ws = "t,ark:vad-" + utt + ".ark";
-      //BaseFloatVectorWriter vad_writer(ws);
-      //vad_writer.Write(utt, vad_result);
-    
-      Matrix<double> cmvn_stats;
-      InitCmvnStats(hd->online_feats.NumCols(), &cmvn_stats);
-      AccCmvnStats(hd->online_feats, NULL, &cmvn_stats);
-      //ApplyCmvn(cmvn_stats, false, &hd->online_feats);   
-
-      delete hd->online_fbank;
-      hd->online_fbank = nullptr;
-    }
-    hd->nnet_decodable = new DecodableAmNnetSimple(
-      g_module_mng->decodable_opts, g_module_mng->trans_model, g_module_mng->am_nnet,
-      hd->online_feats.ColRange(1, hd->fbank_op.mel_opts.num_bins), 
-      NULL, NULL, 0, hd->compiler);
-
-    hd->lat_decoder->AdvanceDecoding(hd->nnet_decodable, hd->online_feats.NumRows());
-    hd->lat_decoder->FinalizeDecoding();
+    //hd->feature_pipeline->InputFinished();
+    hd->bstop = true;
   }
   return CYVOICE_EXIT_SUCCESS;
 }
@@ -659,38 +655,76 @@ int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t 
   if((*bufferSize) % 2 == 1)
     (*bufferSize)--;
 
-  Matrix<BaseFloat> data_;
-  data_.Resize(0, 0);  // clear the data.
-  BaseFloat samp_freq_ = static_cast<BaseFloat>(16000);  //!!! only support 16k 16bit
+  int32 samp_freq_ = 16000;
+  BaseFloat samp_freq = static_cast<BaseFloat>(samp_freq_);  //!!! only support 16k 16bit
 
   int16 *data_ptr = reinterpret_cast<int16*>(speechBuffer);
 
-  // The matrix is arranged row per channel, column per sample.
-  data_.Resize(1, *bufferSize/2);
-  for (uint32 i = 0; i < data_.NumCols(); ++i) {
-    for (uint32 j = 0; j < data_.NumRows(); ++j) {
-      int16 k = *data_ptr++;
-      data_(j, i) =  k;
-    }
+  Vector<BaseFloat> data;
+  data.Resize(*bufferSize/2);
+  for (uint32 i = 0; i < data.Dim(); ++i) 
+  {
+    int16 k = *data_ptr++;
+    data(i) =  k;
   }
 
-  SubVector<BaseFloat> waveform(data_, 0);
-  hd->online_fbank->AcceptWaveform(samp_freq_, waveform);
+  int32 chunk_length;
+  if (g_module_mng->chunk_length_secs > 0) 
+  {
+    chunk_length = int32(samp_freq * g_module_mng->chunk_length_secs);
+    if (chunk_length == 0) chunk_length = 1;
+  } 
+  else 
+  {
+    chunk_length = std::numeric_limits<int32>::max();
+  }
+  
+  int32 samp_remaining = data.Dim();
+  int32 num_samp = chunk_length < samp_remaining ? chunk_length
+                                                 : samp_remaining;
 
-  //std::list<Vector<BaseFloat>* > feat_frames;
-  //GetSDOutput(&online_mfcc, feat_frames);
-  //sd_feat_frames.insert(sd_feat_frames.end(), feat_frames.begin(), feat_frames.end());
-  //Vector<BaseFloat> vad_result(online_mfcc_feats.NumRows());
-  //ComputeVadEnergy(opts, online_mfcc_feats, &vad_result);
+  SubVector<BaseFloat> wave_part(data, 0, num_samp);
+  Fbank fbank(hd->fbank_op);
+  Matrix<BaseFloat> feats;
+  fbank.Compute(wave_part, 1.0, &feats);
 
-  //TODO vad !!!
+  int32 rows = hd->feat_online->AppendData(feats);
+  
+  *bufferSize = samp_freq_ * 2 * rows * hd->fbank_op.frame_opts.frame_shift_ms / 1000;
+  // if (do_endpointing && decoder.EndpointDetected(endpoint_opts)) 
+  // {
+  //   break;
+  // }
 
   return CYVOICE_EXIT_SUCCESS;
 }
 
 int16_t cyVoiceProcessData2(CYVOICE_HANDLE handle)
 {
-  //TODO
+  if(handle == nullptr)
+  {
+    return CYVOICE_EXIT_INVALID_PARM;
+  }
+
+  CAsrHandler* hd = (CAsrHandler*)handle;
+  if(hd->bstart)
+  {
+    hd->decoder->InitDecoding();
+    hd->bstart = false;
+  }
+  
+  OnlineCmvnState cmvn_state;
+  int idx = hd->feat_online->NumFramesReady();
+  hd->online_cmvn->GetState(idx, &cmvn_state);
+  hd->online_cmvn->SetState(cmvn_state);
+
+  hd->decoder->AdvanceDecoding();
+  if(hd->bstop)
+  {
+    hd->decoder->FinalizeDecoding();
+    hd->bstop = false;
+  }
+
   return CYVOICE_EXIT_SUCCESS;
 }
 
@@ -761,6 +795,51 @@ int16_t cyVoiceQueryStatusEx(CYVOICE_HANDLE handle, uint16_t *statusCode, int *n
  *            CYVOICE_EXIT_INVALID_PARM
  *            CYVOICE_EXIT_INVALID_STATE
  */
+
+void GetDiagnosticsAndPrintOutput(const std::string &utt,
+                                  const fst::SymbolTable *word_syms,
+                                  const CompactLattice &clat,
+                                  int64 *tot_num_frames,
+                                  double *tot_like) 
+{
+  if (clat.NumStates() == 0) {
+    KALDI_WARN << "Empty lattice.";
+    return;
+  }
+  CompactLattice best_path_clat;
+  CompactLatticeShortestPath(clat, &best_path_clat);
+
+  Lattice best_path_lat;
+  ConvertLattice(best_path_clat, &best_path_lat);
+
+  double likelihood;
+  LatticeWeight weight;
+  int32 num_frames;
+  std::vector<int32> alignment;
+  std::vector<int32> words;
+  GetLinearSymbolSequence(best_path_lat, &alignment, &words, &weight);
+  num_frames = alignment.size();
+  likelihood = -(weight.Value1() + weight.Value2());
+  *tot_num_frames += num_frames;
+  *tot_like += likelihood;
+  KALDI_VLOG(2) << "Likelihood per frame for utterance " << utt << " is "
+                << (likelihood / num_frames) << " over " << num_frames
+                << " frames.";
+
+  if (g_module_mng->word_syms != NULL) 
+  {
+    std::cerr << utt << ' ';
+    for (size_t i = 0; i < words.size(); i++) {
+      std::string s = g_module_mng->word_syms->Find(words[i]);
+      if (s == "")
+        KALDI_ERR << "Word-id " << words[i] << " not in symbol table.";
+      std::cerr << s << ' ';
+    }
+    std::cerr << std::endl;
+  }
+
+}
+
 int16_t cyVoiceSearchForward(CYVOICE_HANDLE handle, uint16_t *statusCode)
 {
   //TODO
@@ -769,34 +848,36 @@ int16_t cyVoiceSearchForward(CYVOICE_HANDLE handle, uint16_t *statusCode)
     return CYVOICE_EXIT_INVALID_PARM;
   CAsrHandler* hd = (CAsrHandler*)handle;
 
-  //if (!decoder.ReachedFinal()) {
-  //  if (allow_partial) {
-  //    KALDI_WARN << "Outputting partial output for utterance " << utt
-  //               << " since no final-state reached\n";
-  //  } else {
-  //    KALDI_WARN << "Not producing output for utterance " << utt
-  //               << " since no final-state reached and "
-  //               << "--allow-partial=false.\n";
-  //    return false;
-  //  }
-  //}
+  std::string utt = "utt";
+  
+  // if (!decoder.ReachedFinal()) {
+  //   if (allow_partial) {
+  //     KALDI_WARN << "Outputting partial output for utterance " << utt
+  //                << " since no final-state reached\n";
+  //   } else {
+  //     KALDI_WARN << "Not producing output for utterance " << utt
+  //                << " since no final-state reached and "
+  //                << "--allow-partial=false.\n";
+  //     return false;
+  //   }
+  // }
 
   double likelihood;
   LatticeWeight weight;
   int32 num_frames;
   { // First do some stuff with word-level traceback...
     VectorFst<LatticeArc> decoded;
-    if (!hd->lat_decoder->GetBestPath(&decoded))
+    if (!hd->decoder->Decoder().GetBestPath(&decoded))
       // Shouldn't really reach this point as already checked success.
-      KALDI_ERR << "Failed to get traceback for utterance " << "utt";
+      KALDI_ERR << "Failed to get traceback for utterance " << utt;
 
     std::vector<int32> alignment;
     std::vector<int32> words;
     GetLinearSymbolSequence(decoded, &alignment, &words, &weight);
     num_frames = alignment.size();
-
-    if (g_module_mng->word_syms != NULL) {
-      std::cerr << "utt" << ' ';
+    if (g_module_mng->word_syms != NULL) 
+    {
+      std::cerr << utt << ' ';
       for (size_t i = 0; i < words.size(); i++) {
         std::string s = g_module_mng->word_syms->Find(words[i]);
         if (s == "")
@@ -809,38 +890,57 @@ int16_t cyVoiceSearchForward(CYVOICE_HANDLE handle, uint16_t *statusCode)
   }
 
   // Get lattice, and do determinization if requested.
-  Lattice lat;
-  hd->lat_decoder->GetRawLattice(&lat);
-  if (lat.NumStates() == 0)
-    KALDI_ERR << "Unexpected problem getting lattice for utterance " << "utt";
-  fst::Connect(&lat);
-  if (g_module_mng->lat_decoder_config.determinize_lattice) 
-  {
-    CompactLattice clat;
-    if (!DeterminizeLatticePhonePrunedWrapper(
-            g_module_mng->trans_model,
-            &lat,
-            g_module_mng->lat_decoder_config.lattice_beam,
-            &clat,
-            g_module_mng->lat_decoder_config.det_opts))
-      KALDI_WARN << "Determinization finished earlier than the beam for "
-                 << "utterance " << "utt";
-    // We'll write the lattice without acoustic scaling.
-    if (g_module_mng->decodable_opts.acoustic_scale != 0.0)
-      fst::ScaleLattice(fst::AcousticLatticeScale(1.0 / g_module_mng->decodable_opts.acoustic_scale), &clat);
-    hd->compact_lattice_writer.Write("utt", clat);
-  } else {
-    // We'll write the lattice without acoustic scaling.
-    if (g_module_mng->decodable_opts.acoustic_scale != 0.0)
-      fst::ScaleLattice(fst::AcousticLatticeScale(1.0 / g_module_mng->decodable_opts.acoustic_scale), &lat);
-    hd->lattice_writer.Write("utt", lat);
-  }
-  KALDI_LOG << "Log-like per frame for utterance " << "utt" << " is "
-            << (likelihood / num_frames) << " over "
-            << num_frames << " frames.";
-  KALDI_VLOG(2) << "Cost for utterance " << "utt" << " is "
-                << weight.Value1() << " + " << weight.Value2();
-  //*like_ptr = likelihood;
+  // Lattice lat;
+  // bool determinize = false;
+  // hd->decoder->decoder_.GetRawLattice(&lat);
+  // if (lat.NumStates() == 0)
+  //   KALDI_ERR << "Unexpected problem getting lattice for utterance " << utt;
+  // fst::Connect(&lat);
+  // if (determinize) {
+  //   CompactLattice clat;
+  //   if (!DeterminizeLatticePhonePrunedWrapper(
+  //           trans_model,
+  //           &lat,
+  //           decoder.GetOptions().lattice_beam,
+  //           &clat,
+  //           decoder.GetOptions().det_opts))
+  //     KALDI_WARN << "Determinization finished earlier than the beam for "
+  //                << "utterance " << utt;
+  //   // We'll write the lattice without acoustic scaling.
+  //   if (acoustic_scale != 0.0)
+  //     fst::ScaleLattice(fst::AcousticLatticeScale(1.0 / acoustic_scale), &clat);
+  //   compact_lattice_writer->Write(utt, clat);
+  // } else {
+  //   // We'll write the lattice without acoustic scaling.
+  //   if (acoustic_scale != 0.0)
+  //     fst::ScaleLattice(fst::AcousticLatticeScale(1.0 / acoustic_scale), &lat);
+  //   lattice_writer->Write(utt, lat);
+  // }
+  // KALDI_LOG << "Log-like per frame for utterance " << utt << " is "
+  //           << (likelihood / num_frames) << " over "
+  //           << num_frames << " frames.";
+  // KALDI_VLOG(2) << "Cost for utterance " << utt << " is "
+  //               << weight.Value1() << " + " << weight.Value2();
+  // *like_ptr = likelihood;
+
+#if 0
+  CompactLattice clat;
+  bool end_of_utterance = true;
+  hd->decoder->GetLattice(end_of_utterance, &clat);
+  int64 num_frames = 0;
+  double tot_like = 0.0;
+  GetDiagnosticsAndPrintOutput("utt", g_module_mng->word_syms, clat,
+                               &num_frames, &tot_like);
+  //decoding_timer.OutputStats(&timing_stats);
+  // In an application you might avoid updating the adaptation state if
+  // you felt the utterance had low confidence.  See lat/confidence.h
+  hd->feature_pipeline->GetAdaptationState(hd->adaptation_state);
+  // we want to output the lattice with un-scaled acoustics.
+  BaseFloat inv_acoustic_scale = 1.0 / g_module_mng->decodable_opts.acoustic_scale;
+  fst::ScaleLattice(fst::AcousticLatticeScale(inv_acoustic_scale), &clat);
+  //clat_writer.Write("utt", clat);
+  KALDI_LOG << "Decoded utterance " << "utt";
+#endif
 
   return CYVOICE_EXIT_SUCCESS;
 }

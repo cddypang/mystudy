@@ -32,9 +32,9 @@ extern "C" {
  * status code
  */
 #define CYVOICE_SD_NO_SPEECH                     0x0000
-#define CYVOICE_SD_SPEECH_BEGIN_POSSIBLE         0x0001
+//#define CYVOICE_SD_SPEECH_BEGIN_POSSIBLE         0x0001
 #define CYVOICE_SD_SPEECH_BEGIN_FOUND            0x0002
-#define CYVOICE_SD_SPEECH_END_POSSIBLE           0x0003
+//#define CYVOICE_SD_SPEECH_END_POSSIBLE           0x0003
 #define CYVOICE_SD_SPEECH_END_FOUND              0x0004
 #define CYVOICE_SD_SPEECH_TOO_SOFT               0x0005
 #define CYVOICE_SD_SPEECH_TOO_LONG               0x0006
@@ -150,13 +150,13 @@ typedef struct
     int        speech_end_frame;                // in frame
     int        speech_frame;                    // total speech (including silence) processed in frame
 
-    int        speech_begin_sample;             // in sample
-    int        speech_end_sample;               // in sample
-    int        speech_sample;                   // total speech (including silence) processed in sample
+    //int        speech_begin_sample;             // in sample
+    //int        speech_end_sample;               // in sample
+    //int        speech_sample;                   // total speech (including silence) processed in sample
 
-    float      f_speech_begin;                  // in seconds
-    float      f_speech_end;                    // in seconds
-    float      f_speech;                        // total speech (including silence) processed in seconds
+    //float      f_speech_begin;                  // in seconds
+    //float      f_speech_end;                    // in seconds
+    //float      f_speech;                        // total speech (including silence) processed in seconds
 } SD_RESULT;
 
 

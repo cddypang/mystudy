@@ -197,7 +197,7 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
   }
   
   if(audio && audiolen > 0)
-	  std::cout << "read pcm file OK!" << std::endl;
+	  std::cout << "read wave data OK!" << std::endl;
   else
   {
     return -1;
@@ -234,6 +234,8 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 				    << ", packet count: " << idx << std::endl;
 					break;
 				}
+
+				//cyVoiceProcessData2(hd);
 			}
 		}
     if(audio)
@@ -241,8 +243,9 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
       free(audio);
       audio = nullptr;
     }
-
+		cyVoiceProcessData2(hd);
     ifret = cyVoiceStop(hd);
+		cyVoiceProcessData2(hd);
 
 		uint16_t statusCode;
     ifret = cyVoiceSearchForward(hd, &statusCode);
@@ -254,22 +257,21 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 
 int main(int argc, char* argv[])
 {
-	if(argc != 2)
+	if(argc != 3)
 	{
-		printf("./a.out wavfile\n");
+		printf("./a.out config.cfg wavfile\n");
 		return 0;
 	}
 	
   printf("app start\n");
-  char cfg[64] = "nnet3-offline.cfg";   //"./config.ini";
-  cyVoiceInit(cfg);
+  cyVoiceInit(argv[1]);
   printf("lib init \n");
 
   CYVOICE_HANDLE hd = nullptr;
   cyVoiceCreateInstanceEx(&hd);
   printf("lib create finish\n");
 
-  asrtest(hd, argv[1]);
+  asrtest(hd, argv[2]);
 
   cyVoiceReleaseInstance(hd);
   cyVoiceUninit();

@@ -47,6 +47,7 @@ ENDIF ()
 set(LIBASR asr)
 set(libasr_SOURCES
     ${TOP_DIR}/libasr.cpp
+    ${TOP_DIR}/nnet3-decoding.cpp
 )
 
 add_library(${LIBASR} SHARED ${libasr_SOURCES})
@@ -67,6 +68,9 @@ set(LDADD_STATIC
   ${KALDI_DIR}/src/hmm/kaldi-hmm.a
   ${KALDI_DIR}/src/fstext/kaldi-fstext.a
   ${KALDI_DIR}/src/transform/kaldi-transform.a
+  ${KALDI_DIR}/src/online2/kaldi-online2.a
+  ${KALDI_DIR}/src/gmm/kaldi-gmm.a
+  ${KALDI_DIR}/src/tree/kaldi-tree.a
   #${KALDI_DIR}/tools/openfst/lib/libfst.a
   -L${KALDI_DIR}/tools/openfst/lib  ### TODO !!!
   -lfst
@@ -155,6 +159,9 @@ set(LDADD
   -lkaldi-hmm
   -lkaldi-fstext
   -lkaldi-transform
+  -lkaldi-online2
+  -lkaldi-gmm
+  -lkaldi-tree
   -L${KALDI_DIR}/tools/openfst/lib
   -lfst
   -lpthread
