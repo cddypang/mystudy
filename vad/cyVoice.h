@@ -26,7 +26,7 @@ extern "C" {
 #define CYVOICE_EXIT_GRAMMAR_NOT_LOAD            0x0015
 #define CYVOICE_EXIT_GRAMMAR_LOAD_ALREADY        0x0016
 #define CYVOICE_EXIT_GRAMMAR_NOT_ACTIVATED       0x0017
-
+#define CYVOICE_EXIT_WAVE_PIECE_TOO_SHORT        0x0018
 
 /**
  * status code

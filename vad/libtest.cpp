@@ -2,7 +2,7 @@
 #include <fstream>
 #include <queue>
 #include <unistd.h>
-#include <pthread.h>
+#include <thread>
 #include <stdlib.h>
 #include <string.h>
 #include "cyVoice.h"
@@ -227,7 +227,14 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 				idx++;
 				//std::cout << "CloudVDPostData put pcm packet count: " << idx << std::endl;
 				printf("cyVoiceProcessData1[%d] return: %d\n", idx, ifret);
-	
+	      
+				if(ifret == CYVOICE_EXIT_WAVE_PIECE_TOO_SHORT)
+				{
+				  std::cout << "CloudVDPostData put pcm packet error, total_len: " << offset 
+				    << ", packet count: " << idx << std::endl;
+					break;					
+				}
+
 				if(offset >= total_len)
 				{
 				  std::cout << "CloudVDPostData put pcm packet finish, total_len: " << offset 
@@ -235,7 +242,7 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 					break;
 				}
 
-				//cyVoiceProcessData2(hd);
+				cyVoiceProcessData2(hd);
 			}
 		}
     if(audio)
@@ -255,6 +262,21 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 	return 0;
 }
 
+typedef struct stAsrThreadArg
+{
+	void* handle;
+	std::string wavfile;
+} AsrThreadArgT;
+
+void asr_thread(void* args)
+{
+	AsrThreadArgT* args_ = (AsrThreadArgT*)args;
+	if(args_)
+	{
+		asrtest(args_->handle, args_->wavfile);
+	}
+}
+
 int main(int argc, char* argv[])
 {
 	if(argc != 3)
@@ -271,7 +293,34 @@ int main(int argc, char* argv[])
   cyVoiceCreateInstanceEx(&hd);
   printf("lib create finish\n");
 
-  asrtest(hd, argv[2]);
+  std::vector<std::thread*> threads;
+
+  for(int i= 0; i<1; i++)
+	{
+    AsrThreadArgT arg;
+		arg.handle = hd;
+		arg.wavfile = argv[2];
+    std::thread* th = new std::thread(&asr_thread, &arg);		
+		threads.push_back(th);
+		usleep(20*1000);
+	}
+
+  while(fgetc(stdin) != 'q')
+	{
+    usleep(500*1000);
+	}
+
+  for(int i=0; i<threads.size(); i++)
+	{
+		std::thread* th = threads[i];
+		if(th && th->joinable())
+		{
+			th->join();
+			delete th;
+			th = nullptr;
+		}
+	}
+  //asrtest(hd, argv[2]);
 
   cyVoiceReleaseInstance(hd);
   cyVoiceUninit();

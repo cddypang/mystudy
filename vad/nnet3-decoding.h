@@ -24,11 +24,11 @@ using namespace kaldi;
 class XOnlineMatrixFeature: public OnlineFeatureInterface 
 {
 public:
-  explicit XOnlineMatrixFeature(const int32 cache_seconds, const int32 frame_shift_ms, const int32 feat_num_bins) 
+  explicit XOnlineMatrixFeature(const int32 cache_seconds, const int32 frame_shift_ms, 
+    const int32 feat_num_bins, const int32 cmn_window) 
    : cache_sencods_(cache_seconds) ,
      frame_shift_ms_(frame_shift_ms),
-     feat_num_bins_(feat_num_bins), 
-     pos_offset(0), total_rows(0), mat(nullptr)
+     feat_num_bins_(feat_num_bins), cmn_window_(cmn_window), mat(nullptr)
   {
     Init();
   }
@@ -50,32 +50,53 @@ public:
 
   virtual int32 NumFramesReady() const 
   {
-    //std::unique_lock<std::mutex> lock(mtx_);
-    return idx_end == 0 ? 0 : idx_end+1; 
+    return const_cast<XOnlineMatrixFeature*>(this)->GetNumFramesReady();
+  }
+
+  int32 GetNumFramesReady()
+  {
+    std::unique_lock<std::mutex> lock(mtx_);
+    return idx_end == 0 ? 0 : idx_end + 1;
   }
 
   virtual void GetFrame(int32 frame, VectorBase<BaseFloat> *feat)
-  {
+  {    
     std::unique_lock<std::mutex> lock(mtx_);
-    feat->CopyFromVec(mat->Row(frame-idx_begin));
+    KALDI_ASSERT(frame <= idx_end);
+    if(pos_offset == 0)
+      return;
+    int32 idx = pos_offset - (idx_end - idx_begin) - 1;
+    idx += (frame-idx_begin);
+    feat->CopyFromVec(mat->Row(idx));
+    return;
   }
 
   virtual bool IsLastFrame(int32 frame) const
   {
-    //std::unique_lock<std::mutex> lock(mtx_);
+    return const_cast<XOnlineMatrixFeature*>(this)->GetIsLastFrame(frame);
+  }
+
+  bool GetIsLastFrame(int32 frame)
+  {
+    std::unique_lock<std::mutex> lock(mtx_);
     return frame == idx_end;
   }
 
   int32 AppendData(const MatrixBase<BaseFloat>& data)
   {
     std::unique_lock<std::mutex> lock(mtx_);
-    int32 reverse = total_rows - pos_offset - 1;    
+    int32 reverse = total_rows - pos_offset;
     int32 row_in = reverse > data.NumRows() ? data.NumRows() : reverse;
     for (uint32 i = 0; i < row_in; ++i)
     {
-      mat->CopyRowFromVec(data.Row(i), ++pos_offset);
+      mat->CopyRowFromVec(data.Row(i), pos_offset);
+      pos_offset++;
     }
-    idx_end += row_in;
+    if(row_in > 0)
+    {
+      idx_end += row_in;
+      idx_end--;
+    }
 
     return row_in;
   }
@@ -84,17 +105,19 @@ public:
   {
     std::unique_lock<std::mutex> lock(mtx_);
     KALDI_ASSERT(frame_cnt <= idx_end+1);
-    idx_begin = frame_cnt;
-    if(idx_end - idx_begin == -1)
-      pos_offset = 0;
-    else
+    frame_cnt > idx_end ? idx_begin = idx_end : idx_begin = frame_cnt;
+    int32 reverse = idx_end - idx_begin + 1 + cmn_window_;
+    if(pos_offset > reverse && idx_begin > cmn_window_)
     {
-      int32 reverse = idx_end - idx_begin;
       int32 row_begin = pos_offset - reverse;
-      pos_offset = 0;
-      for(int i = 0; i<reverse; ++i)
+      if(row_begin > 0)
       {
-        mat->CopyRowFromVec(mat->Row(row_begin), i);
+        pos_offset = 0;
+        for(int i = 0; i<reverse; ++i)
+        {
+          mat->CopyRowFromVec(mat->Row(row_begin), pos_offset);
+          pos_offset++;
+        }
       }
     }
   }
@@ -105,10 +128,14 @@ private:
     KALDI_ASSERT(mat == nullptr);
     KALDI_ASSERT(frame_shift_ms_ < cache_sencods_ * 1000);
     KALDI_ASSERT(feat_num_bins_ > 0);
+    KALDI_ASSERT(cmn_window_ > 0);
+
+    idx_begin = idx_end = pos_offset = total_rows = 0;    
     int64 ms_ = cache_sencods_ * 1000;
     total_rows = ms_ / frame_shift_ms_;
     if(ms_ % frame_shift_ms_ > 0)
       total_rows++;
+    total_rows += cmn_window_;
     mat = new Matrix<BaseFloat>(total_rows, feat_num_bins_);
   }
 
@@ -128,6 +155,7 @@ private:
   int32 cache_sencods_;
   int32 frame_shift_ms_;
   int32 feat_num_bins_;
+  int32 cmn_window_;
   int32 pos_offset;
   int32 total_rows;
   Matrix<BaseFloat>* mat;

@@ -173,6 +173,7 @@ public:
   
   FbankOptions fbank_op;
   OnlineCmvnOptions cmvn_opts;
+  OnlineCmvnState cmvn_state;
   OnlineCmvn* online_cmvn;
   owl::XOnlineMatrixFeature* feat_online;
 };
@@ -197,12 +198,16 @@ void CAsrHandler::Init()
   // feat_info->ivector_extractor_info.cmvn_opts.normalize_variance = false;
   // //feat_info->ivector_extractor_info.cmvn_opts.cmn_window = 600;  //6s
   // //feat_info->ivector_extractor_info.max_remembered_frames = 600;
+  //cmvn_state.global_cmvn_stats.Resize(2, fbank_op.mel_opts.num_bins+1, kaldi::kSetZero);
+  std::fstream in("global_cmvn");  //, std::ios_base::binary);
+  cmvn_state.global_cmvn_stats.Read(in, false);
 
   decodable_info = new nnet3::DecodableNnetSimpleLoopedInfo(g_module_mng->decodable_opts,
                                                         &g_module_mng->am_nnet);
 
-  feat_online = new owl::XOnlineMatrixFeature(3, fbank_op.frame_opts.frame_shift_ms, fbank_op.mel_opts.num_bins);
-  online_cmvn = new OnlineCmvn(cmvn_opts, feat_online);
+  feat_online = new owl::XOnlineMatrixFeature(30, fbank_op.frame_opts.frame_shift_ms, 
+                                            fbank_op.mel_opts.num_bins, cmvn_opts.cmn_window);
+  online_cmvn = new OnlineCmvn(cmvn_opts, cmvn_state, feat_online);
 
   decoder = new owl::XSingleUtteranceNnet3Decoder(g_module_mng->decoder_opts, g_module_mng->trans_model,
                                             *decodable_info,
@@ -669,24 +674,40 @@ int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t 
   }
 
   int32 chunk_length;
+  int32 num_samp = data.Dim();
   if (g_module_mng->chunk_length_secs > 0) 
   {
     chunk_length = int32(samp_freq * g_module_mng->chunk_length_secs);
     if (chunk_length == 0) chunk_length = 1;
+    num_samp = chunk_length < num_samp ? chunk_length : num_samp;
   } 
   else 
   {
     chunk_length = std::numeric_limits<int32>::max();
   }
-  
-  int32 samp_remaining = data.Dim();
-  int32 num_samp = chunk_length < samp_remaining ? chunk_length
-                                                 : samp_remaining;
 
   SubVector<BaseFloat> wave_part(data, 0, num_samp);
   Fbank fbank(hd->fbank_op);
   Matrix<BaseFloat> feats;
   fbank.Compute(wave_part, 1.0, &feats);
+
+  int32 frame_decoded = hd->decoder->NumFramesDecoded();
+  hd->feat_online->SetNumFramesDecoded(frame_decoded);
+
+  if((feats.NumRows() == 0)
+     || (num_samp < (hd->fbank_op.frame_opts.frame_shift_ms * samp_freq_ / 1000)))
+  {
+    return CYVOICE_EXIT_WAVE_PIECE_TOO_SHORT;
+  }  
+
+  // if(frame_decoded > 0)
+  // { 
+  //   int idx = frame_decoded - 1;
+  //   hd->online_cmvn->Freeze(idx);
+  //   hd->online_cmvn->GetState(idx, &hd->cmvn_state);
+  //   //hd->cmvn_state.global_cmvn_stats = hd->cmvn_state.frozen_state;
+  //   hd->online_cmvn->SetState(hd->cmvn_state);
+  // }
 
   int32 rows = hd->feat_online->AppendData(feats);
   
@@ -712,11 +733,6 @@ int16_t cyVoiceProcessData2(CYVOICE_HANDLE handle)
     hd->decoder->InitDecoding();
     hd->bstart = false;
   }
-  
-  OnlineCmvnState cmvn_state;
-  int idx = hd->feat_online->NumFramesReady();
-  hd->online_cmvn->GetState(idx, &cmvn_state);
-  hd->online_cmvn->SetState(cmvn_state);
 
   hd->decoder->AdvanceDecoding();
   if(hd->bstop)
