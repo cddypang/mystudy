@@ -18,7 +18,9 @@ XSingleUtteranceNnet3DecoderTpl<FST>::XSingleUtteranceNnet3DecoderTpl(
     input_feature_frame_shift_in_seconds_(features->FrameShiftInSeconds()),
     trans_model_(trans_model),
     decodable_(trans_model_, info, features, nullptr),
-    decoder_(fst, decoder_opts_) {
+    fst_(fst.Copy(true)),
+    decoder_(*fst_, decoder_opts_) 
+{
   decoder_.InitDecoding();
 }
 
@@ -78,6 +80,6 @@ bool XSingleUtteranceNnet3DecoderTpl<FST>::EndpointDetected(
 
 // Instantiate the template for the types needed.
 template class XSingleUtteranceNnet3DecoderTpl<fst::Fst<fst::StdArc> >;
-template class XSingleUtteranceNnet3DecoderTpl<fst::GrammarFst>;
+//template class XSingleUtteranceNnet3DecoderTpl<fst::GrammarFst>;  //TODO
 
 }  // namespace kaldi

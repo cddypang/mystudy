@@ -295,7 +295,7 @@ int main(int argc, char* argv[])
 
   std::vector<std::thread*> threads;
 
-  for(int i= 0; i<1; i++)
+  for(int i= 0; i<2; i++)
 	{
     AsrThreadArgT arg;
 		arg.handle = hd;

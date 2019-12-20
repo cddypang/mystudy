@@ -132,7 +132,6 @@ public:
   Fst<StdArc> *decode_fst;
   fst::SymbolTable *word_syms;
 
-
   ParseOptions* po;
 };
 
@@ -168,14 +167,14 @@ public:
   std::string words_wspecifier;
   std::string alignment_wspecifier; 
 
-  nnet3::DecodableNnetSimpleLoopedInfo* decodable_info;
+  owl::XDecodableNnetSimpleLoopedInfo* decodable_info;
   owl::XSingleUtteranceNnet3Decoder* decoder;
   
   FbankOptions fbank_op;
   OnlineCmvnOptions cmvn_opts;
   OnlineCmvnState cmvn_state;
   OnlineCmvn* online_cmvn;
-  owl::XOnlineMatrixFeature* feat_online;
+  owl::XOnlineMatrixFeature* feat_online;  
 };
 
 void CAsrHandler::Init()
@@ -202,7 +201,7 @@ void CAsrHandler::Init()
   std::fstream in("global_cmvn");  //, std::ios_base::binary);
   cmvn_state.global_cmvn_stats.Read(in, false);
 
-  decodable_info = new nnet3::DecodableNnetSimpleLoopedInfo(g_module_mng->decodable_opts,
+  decodable_info = new owl::XDecodableNnetSimpleLoopedInfo(g_module_mng->decodable_opts,
                                                         &g_module_mng->am_nnet);
 
   feat_online = new owl::XOnlineMatrixFeature(30, fbank_op.frame_opts.frame_shift_ms, 
@@ -210,7 +209,7 @@ void CAsrHandler::Init()
   online_cmvn = new OnlineCmvn(cmvn_opts, cmvn_state, feat_online);
 
   decoder = new owl::XSingleUtteranceNnet3Decoder(g_module_mng->decoder_opts, g_module_mng->trans_model,
-                                            *decodable_info,
+                                            decodable_info->GetDecodableInfo(),
                                             *g_module_mng->decode_fst, online_cmvn);
 
   
@@ -728,11 +727,13 @@ int16_t cyVoiceProcessData2(CYVOICE_HANDLE handle)
   }
 
   CAsrHandler* hd = (CAsrHandler*)handle;
+
   if(hd->bstart)
-  {
+  {  
     hd->decoder->InitDecoding();
     hd->bstart = false;
   }
+
 
   hd->decoder->AdvanceDecoding();
   if(hd->bstop)
