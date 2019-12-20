@@ -572,7 +572,7 @@ int16_t cyVoiceStop(CYVOICE_HANDLE handle)
   if(handle)
   {
     CAsrHandler* hd = (CAsrHandler*)handle;
-    //hd->feature_pipeline->InputFinished();
+    hd->feat_online->InputFinished();
     hd->bstop = true;
   }
   return CYVOICE_EXIT_SUCCESS;

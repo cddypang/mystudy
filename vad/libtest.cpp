@@ -299,7 +299,14 @@ int main(int argc, char* argv[])
 	{
     AsrThreadArgT arg;
 		arg.handle = hd;
-		arg.wavfile = argv[2];
+		//arg.wavfile = argv[2];
+		if(i == 0)
+		  arg.wavfile = "121.wav";
+		else
+		{
+			arg.wavfile = "test.wav";
+		}
+		
     std::thread* th = new std::thread(&asr_thread, &arg);		
 		threads.push_back(th);
 		usleep(20*1000);

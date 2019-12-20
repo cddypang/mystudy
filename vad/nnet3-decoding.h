@@ -79,7 +79,12 @@ public:
   bool GetIsLastFrame(int32 frame)
   {
     std::unique_lock<std::mutex> lock(mtx_);
-    return frame == idx_end;
+    return input_finished_ && frame == idx_end;
+  }
+
+  virtual void InputFinished()
+  {
+    input_finished_ = true;
   }
 
   int32 AppendData(const MatrixBase<BaseFloat>& data)
@@ -137,6 +142,7 @@ private:
       total_rows++;
     total_rows += cmn_window_;
     mat = new Matrix<BaseFloat>(total_rows, feat_num_bins_);
+    input_finished_ = false;
   }
 
   void Uninit()
@@ -148,6 +154,7 @@ private:
     } 
   }
 
+  bool input_finished_;
   std::mutex mtx_;
   int32 idx_begin;
   int32 idx_end;  
