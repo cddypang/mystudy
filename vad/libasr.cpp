@@ -47,8 +47,10 @@ public:
   void Init(const std::string& cfgfile)
   {
     chunk_length_secs = 0.18;
+    cache_length_secs = 30;
     do_endpointing = false;
     online = true;
+    global_cmvn_file = "global_cmvn";
 
     po = new ParseOptions("libasr");
 
@@ -57,6 +59,10 @@ public:
     po->Register("chunk-length", &chunk_length_secs,
                 "Length of chunk size in seconds, that we process.  Set to <= 0 "
                 "to use all input in one chunk.");
+    po->Register("cache-length", &cache_length_secs,
+                "Length of wave data cache buffer size in seconds, default 30s.");
+    po->Register("global-cmvn", &global_cmvn_file, 
+                 "global cmvn file, default file name: global_cmvn");
     po->Register("do-endpointing", &do_endpointing,
                 "If true, apply endpoint detection");
     po->Register("online", &online,
@@ -119,6 +125,7 @@ public:
   BaseFloat chunk_length_secs; // = 0.18;
   bool do_endpointing; // = false;
   bool online; // = true;
+  int32 cache_length_secs;
 
 ////////////////////////////////////////////////
 
@@ -126,6 +133,7 @@ public:
   std::string am_module_file;
   std::string fst_file;
   std::string word_syms_filename;
+  std::string global_cmvn_file;
 
   TransitionModel trans_model;
   AmNnetSimple am_nnet;
@@ -150,13 +158,20 @@ public:
     Uninit();
   }
 
+  void Reset()
+  {
+    Uninit();
+    Init();
+  }
+
+
 //private:
   void Init();
   void Uninit();
 
   bool allow_partial;
-  bool bstart = false;
-  bool bstop = false;
+  bool bstarted; // = false;
+  bool bstop;    // = false;
 
   std::string ivector_rspecifier;
   std::string online_ivector_rspecifier;
@@ -176,36 +191,35 @@ public:
   OnlineCmvnState cmvn_state;
   OnlineCmvn* online_cmvn;
   owl::XOnlineMatrixFeature* feat_online;
+
+  int32 speech_status;
+  int32 result_status;
+  std::vector<SD_RESULT> result_sds;
+  std::vector<CYVOICE_RESULT> result_txts;
 };
 
 void CAsrHandler::Init()
 {
+  allow_partial = true;
+  bstarted = bstop = false;
+  speech_status = CYVOICE_SD_NO_SPEECH;
+  result_status = CYVOICE_RESULT_NOT_READY_YET;
+  result_sds.clear();
+  result_txts.clear();
   lattice_wspecifier = "ark:|lattice-scale --acoustic-scale=10.0 ark:- ark,t:lat1-scale";
   words_wspecifier = "";
   alignment_wspecifier = ""; 
 
   //fbank
   fbank_op.use_energy = false;
-  fbank_op.mel_opts.num_bins = 40;  
-  // feat_info->feature_type = "fbank";
-  // //feat_info->fbank_opts.use_energy = true;
-  // feat_info->fbank_opts.mel_opts.num_bins = 40;
-  // feat_info->fbank_opts.frame_opts.samp_freq = 16000;
-  // feat_info->use_ivectors = true;
-  // feat_info->ivector_extractor_info.global_cmvn_stats.Resize(2, 
-  //     feat_info->fbank_opts.mel_opts.num_bins + 1);
-  // feat_info->ivector_extractor_info.cmvn_opts.normalize_mean = true;
-  // feat_info->ivector_extractor_info.cmvn_opts.normalize_variance = false;
-  // //feat_info->ivector_extractor_info.cmvn_opts.cmn_window = 600;  //6s
-  // //feat_info->ivector_extractor_info.max_remembered_frames = 600;
-  //cmvn_state.global_cmvn_stats.Resize(2, fbank_op.mel_opts.num_bins+1, kaldi::kSetZero);
-  std::fstream in("global_cmvn");  //, std::ios_base::binary);
+  fbank_op.mel_opts.num_bins = 40;
+  std::fstream in(g_module_mng->global_cmvn_file);  //, std::ios_base::binary);
   cmvn_state.global_cmvn_stats.Read(in, false);
 
   decodable_info = new nnet3::DecodableNnetSimpleLoopedInfo(g_module_mng->decodable_opts,
                                                         &g_module_mng->am_nnet);
 
-  feat_online = new owl::XOnlineMatrixFeature(30, fbank_op.frame_opts.frame_shift_ms, 
+  feat_online = new owl::XOnlineMatrixFeature(g_module_mng->cache_length_secs, fbank_op.frame_opts.frame_shift_ms, 
                                             fbank_op.mel_opts.num_bins, cmvn_opts.cmn_window);
   online_cmvn = new OnlineCmvn(cmvn_opts, cmvn_state, feat_online);
 
@@ -524,7 +538,13 @@ int16_t cyVoiceStart(CYVOICE_HANDLE handle)
   if(handle)
   {
     CAsrHandler* hd = (CAsrHandler*)handle;
-    hd->bstart = true;
+    hd->Uninit();
+    hd->Init();
+    if(!hd->bstarted)
+    {
+      hd->decoder->InitDecoding();
+      hd->bstarted = true;
+    }
 
     // Int32VectorWriter words_writer(hd->words_wspecifier);
     // Int32VectorWriter alignment_writer(hd->alignment_wspecifier);
@@ -646,7 +666,8 @@ int16_t cyVoiceProcessDataToFeat(CYVOICE_HANDLE handle, char *str_key)
  *            CYVOICE_EXIT_INVALID_PARM
  *            CYVOICE_EXIT_INVALID_STATE
  */
-int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t *bufferSize, uint16_t *statusCode, int *num_sd_result, SD_RESULT **sd_result)
+int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t *bufferSize, uint16_t *statusCode, 
+                            int *num_sd_result, SD_RESULT **sd_result)
 {
   //TODO
   if(handle == nullptr || *bufferSize <= 0)
@@ -656,6 +677,13 @@ int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t 
   }
 
   CAsrHandler* hd = (CAsrHandler*)handle;
+
+  if(hd->feat_online->NumFramesReady() == 0)
+  {
+    SD_RESULT sd_rst;
+    memset(&sd_rst, 0, sizeof(SD_RESULT));
+    hd->result_sds.push_back(sd_rst);
+  }
 
   if((*bufferSize) % 2 == 1)
     (*bufferSize)--;
@@ -698,24 +726,33 @@ int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t 
      || (num_samp < (hd->fbank_op.frame_opts.frame_shift_ms * samp_freq_ / 1000)))
   {
     return CYVOICE_EXIT_WAVE_PIECE_TOO_SHORT;
-  }  
-
-  // if(frame_decoded > 0)
-  // { 
-  //   int idx = frame_decoded - 1;
-  //   hd->online_cmvn->Freeze(idx);
-  //   hd->online_cmvn->GetState(idx, &hd->cmvn_state);
-  //   //hd->cmvn_state.global_cmvn_stats = hd->cmvn_state.frozen_state;
-  //   hd->online_cmvn->SetState(hd->cmvn_state);
-  // }
+  }
 
   int32 rows = hd->feat_online->AppendData(feats);
   
   *bufferSize = samp_freq_ * 2 * rows * hd->fbank_op.frame_opts.frame_shift_ms / 1000;
+
+  auto sd_rst_ = hd->result_sds.begin();
+  sd_rst_->speech_frame += feats.NumRows();
+  sd_rst_->speech_end_frame = sd_rst_->speech_frame - 1;
+  sd_rst_->speech_sample += *bufferSize / 2;
+  sd_rst_->speech_end_sample = sd_rst_->speech_sample - 1;
+  sd_rst_->f_speech += sd_rst_->speech_sample / samp_freq;
+  sd_rst_->f_speech_end = sd_rst_->f_speech;
+  sd_rst_->speech_last_frame = sd_rst_->speech_end_frame;
+
+  *num_sd_result = hd->result_sds.size();
+  *sd_result = hd->result_sds.data();
+
   // if (do_endpointing && decoder.EndpointDetected(endpoint_opts)) 
   // {
   //   break;
   // }
+
+  if(hd->decoder->NumFramesDecoded() > 0)
+  {
+    hd->result_status = CYVOICE_RESULT_READY;
+  }
 
   return CYVOICE_EXIT_SUCCESS;
 }
@@ -728,17 +765,14 @@ int16_t cyVoiceProcessData2(CYVOICE_HANDLE handle)
   }
 
   CAsrHandler* hd = (CAsrHandler*)handle;
-  if(hd->bstart)
-  {
-    hd->decoder->InitDecoding();
-    hd->bstart = false;
-  }
 
-  hd->decoder->AdvanceDecoding();
+  if(hd->bstarted)
+    hd->decoder->AdvanceDecoding();
   if(hd->bstop)
   {
     hd->decoder->FinalizeDecoding();
     hd->bstop = false;
+    hd->bstarted = false;
   }
 
   return CYVOICE_EXIT_SUCCESS;
@@ -774,7 +808,13 @@ int16_t cyVoiceProcessQueryResult(CYVOICE_HANDLE handle, void *speechBuffer, uin
 
 int16_t cyVoiceQueryStatus(CYVOICE_HANDLE handle, uint16_t *statusCode,  float *speech_begin, float *speech_end)
 {
-  //TODO
+  if(handle == nullptr)
+  {
+    return CYVOICE_EXIT_INVALID_PARM;
+  }
+
+  CAsrHandler* hd = (CAsrHandler*)handle;
+  *statusCode = std::max(hd->speech_status, hd->result_status);  
   return CYVOICE_EXIT_SUCCESS;
 }
 
@@ -793,9 +833,20 @@ int16_t cyVoiceQueryStatus(CYVOICE_HANDLE handle, uint16_t *statusCode,  float *
 *            CYVOICE_EXIT_INVALID_PARM
 *
 */
-int16_t cyVoiceQueryStatusEx(CYVOICE_HANDLE handle, uint16_t *statusCode, int *num_sd_result, SD_RESULT **sd_result, int *num_sr_result, CYVOICE_RESULT **sr_result)
+int16_t cyVoiceQueryStatusEx(CYVOICE_HANDLE handle, uint16_t *statusCode, 
+  int *num_sd_result, SD_RESULT **sd_result, int *num_sr_result, CYVOICE_RESULT **sr_result)
 {
-  //TODO
+  if(handle == nullptr)
+  {
+    return CYVOICE_EXIT_INVALID_PARM;
+  }
+
+  CAsrHandler* hd = (CAsrHandler*)handle;
+  *statusCode = std::max(hd->speech_status, hd->result_status); 
+  *num_sd_result = hd->result_sds.size();
+  *sd_result = hd->result_sds.data();
+  *num_sr_result = hd->result_txts.size();
+  *sr_result = hd->result_txts.data();
   return CYVOICE_EXIT_SUCCESS;
 }
 
@@ -812,71 +863,30 @@ int16_t cyVoiceQueryStatusEx(CYVOICE_HANDLE handle, uint16_t *statusCode, int *n
  *            CYVOICE_EXIT_INVALID_STATE
  */
 
-void GetDiagnosticsAndPrintOutput(const std::string &utt,
-                                  const fst::SymbolTable *word_syms,
-                                  const CompactLattice &clat,
-                                  int64 *tot_num_frames,
-                                  double *tot_like) 
-{
-  if (clat.NumStates() == 0) {
-    KALDI_WARN << "Empty lattice.";
-    return;
-  }
-  CompactLattice best_path_clat;
-  CompactLatticeShortestPath(clat, &best_path_clat);
-
-  Lattice best_path_lat;
-  ConvertLattice(best_path_clat, &best_path_lat);
-
-  double likelihood;
-  LatticeWeight weight;
-  int32 num_frames;
-  std::vector<int32> alignment;
-  std::vector<int32> words;
-  GetLinearSymbolSequence(best_path_lat, &alignment, &words, &weight);
-  num_frames = alignment.size();
-  likelihood = -(weight.Value1() + weight.Value2());
-  *tot_num_frames += num_frames;
-  *tot_like += likelihood;
-  KALDI_VLOG(2) << "Likelihood per frame for utterance " << utt << " is "
-                << (likelihood / num_frames) << " over " << num_frames
-                << " frames.";
-
-  if (g_module_mng->word_syms != NULL) 
-  {
-    std::cerr << utt << ' ';
-    for (size_t i = 0; i < words.size(); i++) {
-      std::string s = g_module_mng->word_syms->Find(words[i]);
-      if (s == "")
-        KALDI_ERR << "Word-id " << words[i] << " not in symbol table.";
-      std::cerr << s << ' ';
-    }
-    std::cerr << std::endl;
-  }
-
-}
-
 int16_t cyVoiceSearchForward(CYVOICE_HANDLE handle, uint16_t *statusCode)
 {
-  //TODO
-  using fst::VectorFst;
-  if(handle == nullptr)
+  if(handle == nullptr || statusCode == nullptr)
     return CYVOICE_EXIT_INVALID_PARM;
   CAsrHandler* hd = (CAsrHandler*)handle;
 
+  if(hd->decoder->NumFramesDecoded() <= 0)
+  {
+    hd->result_status = CYVOICE_RESULT_NOT_READY_YET;
+    return CYVOICE_EXIT_SUCCESS;
+  }
+
+  if (!hd->decoder->Decoder().ReachedFinal()) 
+  {
+    hd->result_status = CYVOICE_RESULT_PARTIAL;
+  }
+  else
+  {
+    hd->result_status = CYVOICE_RESULT_WHOLE;
+  }
+  *statusCode = hd->result_status;
+
+  using fst::VectorFst;
   std::string utt = "utt";
-  
-  // if (!decoder.ReachedFinal()) {
-  //   if (allow_partial) {
-  //     KALDI_WARN << "Outputting partial output for utterance " << utt
-  //                << " since no final-state reached\n";
-  //   } else {
-  //     KALDI_WARN << "Not producing output for utterance " << utt
-  //                << " since no final-state reached and "
-  //                << "--allow-partial=false.\n";
-  //     return false;
-  //   }
-  // }
 
   double likelihood;
   LatticeWeight weight;
@@ -893,14 +903,27 @@ int16_t cyVoiceSearchForward(CYVOICE_HANDLE handle, uint16_t *statusCode)
     num_frames = alignment.size();
     if (g_module_mng->word_syms != NULL) 
     {
-      std::cerr << utt << ' ';
-      for (size_t i = 0; i < words.size(); i++) {
+      CYVOICE_RESULT result_txt;
+      memset(&result_txt, 0, sizeof(result_txt));
+      strcpy(result_txt.szGrammarName, "generic_ex");
+      std::string txt, txt_raw;
+      for (size_t i = 0; i < words.size(); i++) 
+      {
         std::string s = g_module_mng->word_syms->Find(words[i]);
         if (s == "")
           KALDI_ERR << "Word-id " << words[i] << " not in symbol table.";
-        std::cerr << s << ' ';
+        txt_raw += s;
+        txt += s;
+        txt += " ";
       }
-      std::cerr << '\n';
+
+      int32 len = std::min(sizeof(result_txt.result_raw), txt_raw.length());
+      memcpy(result_txt.result_raw, txt_raw.c_str(), len);
+      len = std::min(sizeof(result_txt.result), txt.length());
+      memcpy(result_txt.result, txt.c_str(), len);
+
+      hd->result_txts.clear();
+      hd->result_txts.push_back(result_txt);
     }
     likelihood = -(weight.Value1() + weight.Value2());
   }
@@ -939,31 +962,12 @@ int16_t cyVoiceSearchForward(CYVOICE_HANDLE handle, uint16_t *statusCode)
   //               << weight.Value1() << " + " << weight.Value2();
   // *like_ptr = likelihood;
 
-#if 0
-  CompactLattice clat;
-  bool end_of_utterance = true;
-  hd->decoder->GetLattice(end_of_utterance, &clat);
-  int64 num_frames = 0;
-  double tot_like = 0.0;
-  GetDiagnosticsAndPrintOutput("utt", g_module_mng->word_syms, clat,
-                               &num_frames, &tot_like);
-  //decoding_timer.OutputStats(&timing_stats);
-  // In an application you might avoid updating the adaptation state if
-  // you felt the utterance had low confidence.  See lat/confidence.h
-  hd->feature_pipeline->GetAdaptationState(hd->adaptation_state);
-  // we want to output the lattice with un-scaled acoustics.
-  BaseFloat inv_acoustic_scale = 1.0 / g_module_mng->decodable_opts.acoustic_scale;
-  fst::ScaleLattice(fst::AcousticLatticeScale(inv_acoustic_scale), &clat);
-  //clat_writer.Write("utt", clat);
-  KALDI_LOG << "Decoded utterance " << "utt";
-#endif
-
   return CYVOICE_EXIT_SUCCESS;
 }
 
 int16_t cyVoiceSearchForwardPartial(CYVOICE_HANDLE handle, uint16_t *statusCode)
 {
-  //TODO
+  cyVoiceSearchForward(handle, statusCode);
   return CYVOICE_EXIT_SUCCESS;
 }
 
@@ -997,17 +1001,26 @@ int16_t cyVoiceAbort(CYVOICE_HANDLE handle)
  */
 int16_t cyVoiceQueryResult(CYVOICE_HANDLE handle, uint16_t *statusCode, char *result, int32_t *score)
 {
-  //TODO
   if(handle == nullptr)
     return CYVOICE_EXIT_INVALID_PARM;
   CAsrHandler* hd = (CAsrHandler*)handle;
+
+  *statusCode = std::max(hd->speech_status, hd->result_status); 
+  auto it = hd->result_txts.begin();
+  if(it != hd->result_txts.end())
+  {
+    if(result)
+      strcpy(result, it->result);
+    if(score)
+      *score = (int32)it->score;
+  }
 
   return CYVOICE_EXIT_SUCCESS;
 }
 
 int16_t cyVoiceQueryResultPartial(CYVOICE_HANDLE handle, uint16_t *statusCode, char *result, int32_t *score)
 {
-  //TODO
+  cyVoiceQueryResult(handle, statusCode, result, score);
   return CYVOICE_EXIT_SUCCESS;
 }
 
@@ -1026,7 +1039,13 @@ int16_t cyVoiceQueryResultPartial(CYVOICE_HANDLE handle, uint16_t *statusCode, c
  */
 int16_t cyVoiceQueryResults(CYVOICE_HANDLE handle, uint16_t *statusCode, int *num_result, CYVOICE_RESULT *st_result)
 {
-  //TODO
+  if(handle == nullptr)
+    return CYVOICE_EXIT_INVALID_PARM;
+  CAsrHandler* hd = (CAsrHandler*)handle;
+
+  *statusCode = std::max(hd->speech_status, hd->result_status); 
+  *num_result = hd->result_txts.size();
+  st_result = hd->result_txts.data();
   return CYVOICE_EXIT_SUCCESS;
 }
 
@@ -1063,15 +1082,43 @@ int16_t cyVoiceQueryResultAlign(CYVOICE_HANDLE handle, CYVOICE_RESULT_ALIGN *st_
  *            CYVOICE_EXIT_INVALID_PARM
  *            CYVOICE_EXIT_INVALID_STATE
  */
-int16_t cyVoiceQueryActiveResults(CYVOICE_HANDLE handle, int active_index, uint16_t *statusCode, int *num_active_grammar, int *num_result, CYVOICE_RESULT *st_result)
+int16_t cyVoiceQueryActiveResults(CYVOICE_HANDLE handle, int active_index, uint16_t *statusCode, 
+                                  int *num_active_grammar, int *num_result, CYVOICE_RESULT *st_result)
 {
-  //TODO
+  if(handle == nullptr)
+    return CYVOICE_EXIT_INVALID_PARM;
+  CAsrHandler* hd = (CAsrHandler*)handle;
+
+  *statusCode = std::max(hd->speech_status, hd->result_status);   
+  *num_active_grammar = 1;
+
+  int32 num_rst = 0;
+  for(int i=0; i<hd->result_txts.size();i++)
+  {
+    if(st_result)
+    {
+      memcpy(st_result, &hd->result_txts[i], sizeof(CYVOICE_RESULT));
+      num_rst++;
+      st_result++;
+    }
+    else
+      break;
+  }
+  *num_result = num_rst;
+  
   return CYVOICE_EXIT_SUCCESS;
 }
 
 int16_t cyVoiceQueryAllActiveResults(CYVOICE_HANDLE handle, uint16_t *statusCode, int *num_result, CYVOICE_RESULT *st_result, int max_num_result)
 {
-  //TODO
+  if(handle == nullptr)
+    return CYVOICE_EXIT_INVALID_PARM;
+  CAsrHandler* hd = (CAsrHandler*)handle;
+
+  *statusCode = std::max(hd->speech_status, hd->result_status); 
+  *num_result = hd->result_txts.size();
+  st_result = hd->result_txts.data();
+
   return CYVOICE_EXIT_SUCCESS;
 }
 
