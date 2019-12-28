@@ -665,8 +665,8 @@ int16_t cyVoiceProcessDataToFeat(CYVOICE_HANDLE handle, char *str_key)
  *            CYVOICE_EXIT_INVALID_PARM
  *            CYVOICE_EXIT_INVALID_STATE
  */
-int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t *bufferSize, uint16_t *statusCode, 
-                            int *num_sd_result, SD_RESULT **sd_result)
+int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t *bufferSize, 
+            uint16_t *statusCode, int *num_sd_result, SD_RESULT **sd_result)
 {
   //TODO
   if(handle == nullptr || *bufferSize <= 0)
@@ -740,8 +740,12 @@ int16_t cyVoiceProcessData1(CYVOICE_HANDLE handle, void *speechBuffer, uint32_t 
   sd_rst_->f_speech_end = sd_rst_->f_speech;
   sd_rst_->speech_last_frame = sd_rst_->speech_end_frame;
 
-  *num_sd_result = hd->result_sds.size();
-  *sd_result = hd->result_sds.data();
+  if(statusCode)
+    *statusCode = std::max(hd->speech_status, hd->result_status); 
+  if(num_sd_result)
+    *num_sd_result = hd->result_sds.size();
+  if(sd_result)
+    *sd_result = hd->result_sds.data();
 
   // if (do_endpointing && decoder.EndpointDetected(endpoint_opts)) 
   // {

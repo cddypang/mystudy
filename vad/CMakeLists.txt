@@ -172,6 +172,7 @@ target_link_libraries(${CONSOLE_APP} ${LDADD})
 ENDIF ()
 
 ################# TESTSDK_APP ######################
+IF(!CMAKE_HOST_APPLE)
 set(TESTSDK sdktest)
 set(sdktest_SOURCES
     ${TOP_DIR}/test/test_sdk.cpp 
@@ -183,10 +184,6 @@ IF (WIN32)
 
 ELSE ()  ## UNIX
 set(LDTIEG -L${TOP_DIR}/build -ltieg)
-IF(CMAKE_HOST_APPLE)
-target_compile_options(${TESTSDK} PUBLIC -fPIC)
-target_link_libraries(${TESTSDK} ${LIBASR} ${LDTIEG})
-ELSE()
 include_directories(
   ${TOP_DIR}/test
   /usr/local/cuda/include
