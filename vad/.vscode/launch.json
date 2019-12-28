@@ -29,7 +29,8 @@
         "program": "${workspaceFolder}/build/asrtest", 
         "args": [
           "nnet3-online.cfg",
-          "121.wav"
+          "121.wav",
+          "1"
         ], 
         "stopAtEntry": false, 
         "cwd": "${workspaceFolder}/build", 
@@ -44,6 +45,29 @@
             "ignoreFailures": true
           }
         ]
-    }
+    },
+    {
+      "name": "sdktest",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/sdktest", 
+      "args": [
+        "-c","nnet3-online.cfg","-t","wav",
+        "-rate","16000","-long","0","-size","8000","-n","1"
+      ], 
+      "stopAtEntry": false, 
+      "cwd": "${workspaceFolder}/build", 
+      "environment": [
+      ], 
+      "externalConsole": false, 
+      "MIMode": "gdb", 
+      "setupCommands": [
+        {
+          "description": "Enalbe pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+  }
   ]
 }

@@ -150,13 +150,13 @@ typedef struct
     int        speech_end_frame;                // in frame
     int        speech_frame;                    // total speech (including silence) processed in frame
 
-    //int        speech_begin_sample;             // in sample
-    //int        speech_end_sample;               // in sample
-    //int        speech_sample;                   // total speech (including silence) processed in sample
+    int        speech_begin_sample;             // in sample
+    int        speech_end_sample;               // in sample
+    int        speech_sample;                   // total speech (including silence) processed in sample
 
-    //float      f_speech_begin;                  // in seconds
-    //float      f_speech_end;                    // in seconds
-    //float      f_speech;                        // total speech (including silence) processed in seconds
+    float      f_speech_begin;                  // in seconds
+    float      f_speech_end;                    // in seconds
+    float      f_speech;                        // total speech (including silence) processed in seconds
 } SD_RESULT;
 
 

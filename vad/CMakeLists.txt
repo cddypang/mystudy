@@ -32,7 +32,8 @@ set(CXX_IGN_WARNINGS
     -Wno-unused-but-set-variable\
     -Wno-writable-strings\
     -Wno-unused-local-typedefs\
-    -Wno-sign-compare ")
+    -Wno-sign-compare\
+    -Wno-comment ")
 set(CMAKE_C_FLAGS "-Wall -g ${CMAKE_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "-Wall -g -std=c++11 ${CXX_IGN_WARNINGS} ${CMAKE_CXX_FLAGS}")
 ENDIF ()
@@ -168,4 +169,37 @@ set(LDADD
   )
 
 target_link_libraries(${CONSOLE_APP} ${LDADD})
+ENDIF ()
+
+################# TESTSDK_APP ######################
+set(TESTSDK sdktest)
+set(sdktest_SOURCES
+    ${TOP_DIR}/test/test_sdk.cpp 
+)
+
+add_executable(${TESTSDK} ${sdktest_SOURCES})
+
+IF (WIN32)
+
+ELSE ()  ## UNIX
+set(LDTIEG -L${TOP_DIR}/build -ltieg)
+IF(CMAKE_HOST_APPLE)
+target_compile_options(${TESTSDK} PUBLIC -fPIC)
+target_link_libraries(${TESTSDK} ${LIBASR} ${LDTIEG})
+ELSE()
+include_directories(
+  ${TOP_DIR}/test
+  /usr/local/cuda/include
+  )
+set(CMAKE_CXX_FLAGS "-DHAVE_CUDA=1 ${CMAKE_CXX_FLAGS}")
+target_compile_options(${TESTSDK} PUBLIC -shared -fPIC)
+set(LDADD_CUDA
+  -L/usr/local/cuda/lib64
+  -lcublas
+  -lcurand
+  -lcudart
+  -lcusparse
+  )
+target_link_libraries(${TESTSDK} ${LIBASR} ${LDADD_CUDA} ${LDTIEG})
+ENDIF()
 ENDIF ()

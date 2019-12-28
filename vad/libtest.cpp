@@ -203,7 +203,7 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
     return -1;
   }
   
-
+  uint16_t statusCode;
   int ifret = cyVoiceStart(hd);
 	
 	for (int i = 0; i < 1 ; i++)
@@ -243,6 +243,7 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
 				}
 
 				cyVoiceProcessData2(hd);
+				ifret = cyVoiceSearchForward(hd, &statusCode);
 			}
 		}
     if(audio)
@@ -254,9 +255,19 @@ int asrtest(CYVOICE_HANDLE hd, const std::string& wavfile)
     ifret = cyVoiceStop(hd);
 		cyVoiceProcessData2(hd);
 
-		uint16_t statusCode;
     ifret = cyVoiceSearchForward(hd, &statusCode);
-    ifret = cyVoiceQueryResult(hd, nullptr, nullptr, nullptr);
+		char result_txt[1024] = {0};
+		int32_t result_score;
+    ifret = cyVoiceQueryResult(hd, &statusCode, result_txt, &result_score);
+		if(!ifret)
+		{
+			printf("cyVoiceQueryResult, result: %s\n", result_txt);
+		}
+		else
+		{
+			printf("cyVoiceQueryResult error, return code: %d\n", ifret);
+		}
+		
 	}
 
 	return 0;
@@ -279,9 +290,9 @@ void asr_thread(void* args)
 
 int main(int argc, char* argv[])
 {
-	if(argc != 3)
+	if(argc != 4)
 	{
-		printf("./a.out config.cfg wavfile\n");
+		printf("./a.out config.cfg wavfile engine-cnt\n");
 		return 0;
 	}
 	
@@ -289,23 +300,20 @@ int main(int argc, char* argv[])
   cyVoiceInit(argv[1]);
   printf("lib init \n");
 
-  CYVOICE_HANDLE hd = nullptr;
-  cyVoiceCreateInstanceEx(&hd);
-  printf("lib create finish\n");
-
+  int engine_cnt = atoi(argv[3]);
   std::vector<std::thread*> threads;
+	std::vector<CYVOICE_HANDLE> engine_hds;
 
-  for(int i= 0; i<2; i++)
+  for(int i= 0; i<engine_cnt; i++)
 	{
+	  CYVOICE_HANDLE hd = nullptr;
+    cyVoiceCreateInstanceEx(&hd);
+		engine_hds.push_back(hd);
+    printf("thread[%d] lib create finish\n", i);
+
     AsrThreadArgT arg;
 		arg.handle = hd;
-		//arg.wavfile = argv[2];
-		if(i == 0)
-		  arg.wavfile = "121.wav";
-		else
-		{
-			arg.wavfile = "test.wav";
-		}
+		arg.wavfile = argv[2];
 		
     std::thread* th = new std::thread(&asr_thread, &arg);		
 		threads.push_back(th);
@@ -326,10 +334,10 @@ int main(int argc, char* argv[])
 			delete th;
 			th = nullptr;
 		}
+		cyVoiceReleaseInstance(engine_hds[i]);
 	}
   //asrtest(hd, argv[2]);
 
-  cyVoiceReleaseInstance(hd);
   cyVoiceUninit();
   printf("application quit!!!\n");
 	return 0;

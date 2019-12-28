@@ -127,6 +127,12 @@ public:
     }
   }
 
+  void Reset()
+  {
+    Uninit();
+    Init();
+  }
+
 private:
   void Init()
   {
