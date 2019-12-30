@@ -182,7 +182,7 @@ public:
   std::string words_wspecifier;
   std::string alignment_wspecifier; 
 
-  owl::XDecodableNnetSimpleLoopedInfo* decodable_info;
+  nnet3::DecodableNnetSimpleLoopedInfo* decodable_info;
   owl::XSingleUtteranceNnet3Decoder* decoder;
   
   FbankOptions fbank_op;
@@ -215,15 +215,13 @@ void CAsrHandler::Init()
   std::fstream in(g_module_mng->global_cmvn_file);  //, std::ios_base::binary);
   cmvn_state.global_cmvn_stats.Read(in, false);
 
-  decodable_info = new owl::XDecodableNnetSimpleLoopedInfo(g_module_mng->decodable_opts,
-                                                        &g_module_mng->am_nnet);
-
   feat_online = new owl::XOnlineMatrixFeature(g_module_mng->cache_length_secs, fbank_op.frame_opts.frame_shift_ms, 
                                             fbank_op.mel_opts.num_bins, cmvn_opts.cmn_window);
   online_cmvn = new OnlineCmvn(cmvn_opts, cmvn_state, feat_online);
 
+  decodable_info = new nnet3::DecodableNnetSimpleLoopedInfo(g_module_mng->decodable_opts, &g_module_mng->am_nnet);
   decoder = new owl::XSingleUtteranceNnet3Decoder(g_module_mng->decoder_opts, g_module_mng->trans_model,
-                                            decodable_info->GetDecodableInfo(),
+                                            *decodable_info,
                                             *g_module_mng->decode_fst, online_cmvn);
 
   

@@ -175,33 +175,6 @@ private:
 };
 
 
-class XDecodableNnetSimpleLoopedInfo
-{
-public:
-  XDecodableNnetSimpleLoopedInfo(const nnet3::NnetSimpleLoopedComputationOptions &opts, nnet3::AmNnetSimple *nnet)
-   : nnet_(nnet->GetNnet().Copy()), decodable_info_(opts, nnet_)
-  {}
-
-  virtual ~XDecodableNnetSimpleLoopedInfo()
-  {
-    if(nnet_)
-    {
-      delete nnet_;
-      nnet_ = nullptr;
-    }
-  }
-
-  nnet3::DecodableNnetSimpleLoopedInfo& GetDecodableInfo()
-  {
-    return decodable_info_;
-  }
-
-private:
-  nnet3::Nnet* nnet_;
-  nnet3::DecodableNnetSimpleLoopedInfo decodable_info_;  
-};
-
-
 /**
    You will instantiate this class when you want to decode a single utterance
    using the online-decoding setup for neural nets.  The template will be
