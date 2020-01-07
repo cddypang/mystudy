@@ -68,6 +68,30 @@
           "ignoreFailures": true
         }
       ]
-  }
+    },
+    {
+      "name": "cyasr",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/cyasr", 
+      "args": [
+        "nnet3-online.cfg",
+        "121.wav",
+        "1"
+      ], 
+      "stopAtEntry": false, 
+      "cwd": "${workspaceFolder}/build", 
+      "environment": [
+      ], 
+      "externalConsole": false, 
+      "MIMode": "gdb", 
+      "setupCommands": [
+        {
+          "description": "Enalbe pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
   ]
 }

@@ -102,6 +102,11 @@ public:
 
   bool LoadStaticModules()
   {
+    if (!(word_syms = fst::SymbolTable::ReadText(word_syms_filename)))
+      KALDI_ERR << "Could not read symbol table from file " << word_syms_filename;
+
+    decode_fst = fst::ReadFstKaldiGeneric(fst_file);
+
     bool binary;
     Input ki(am_module_file, &binary);
     trans_model.Read(ki.Stream(), binary);
@@ -109,10 +114,6 @@ public:
     SetBatchnormTestMode(true, &(am_nnet.GetNnet()));
     SetDropoutTestMode(true, &(am_nnet.GetNnet()));
     CollapseModel(CollapseModelConfig(), &(am_nnet.GetNnet()));
-    decode_fst = fst::ReadFstKaldiGeneric(fst_file);
-
-    if (!(word_syms = fst::SymbolTable::ReadText(word_syms_filename)))
-      KALDI_ERR << "Could not read symbol table from file " << word_syms_filename;
 
     return true;
   }

@@ -34,36 +34,19 @@ set(CXX_IGN_WARNINGS
     -Wno-unused-local-typedefs\
     -Wno-sign-compare\
     -Wno-comment ")
-set(CMAKE_C_FLAGS "-Wall -g ${CMAKE_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS "-Wall -g -std=c++11 ${CXX_IGN_WARNINGS} ${CMAKE_CXX_FLAGS}")
+set(CMAKE_C_FLAGS "-Wall -g -O0 -fPIC ${CMAKE_C_FLAGS}")
+set(CMAKE_CXX_FLAGS "-Wall -g -O0 -fPIC -std=c++11 ${CXX_IGN_WARNINGS} ${CMAKE_CXX_FLAGS}")
 ENDIF ()
 
 IF (UNIX)
-#set(CUDALIBS -L/usr/local/cuda/lib64 -lcublas -lcusolver -lcudart -lcufft -lcurand)
-#set(LDADD -L${TOP_DIR}/../../../cyTts_now -lcyTts -ltensorflow_framework)
-ENDIF ()
-
-
-################# cyVoice_LIB ######################
-set(LIBASR asr)
-set(libasr_SOURCES
-    ${TOP_DIR}/libasr.cpp
-    ${TOP_DIR}/nnet3-decoding.cpp
-)
-
-add_library(${LIBASR} SHARED ${libasr_SOURCES})
-
-IF (WIN32)
-
-ELSE ()
-set(LDADD_STATIC 
+set(LDADD_KALDI_STATIC 
   ${KALDI_DIR}/src/feat/kaldi-feat.a
   ${KALDI_DIR}/src/matrix/kaldi-matrix.a
-  ${KALDI_DIR}/src/cudamatrix/kaldi-cudamatrix.a
   ${KALDI_DIR}/src/base/kaldi-base.a
   ${KALDI_DIR}/src/util/kaldi-util.a
-  ${KALDI_DIR}/src/ivector/kaldi-ivector.a
+  ${KALDI_DIR}/src/ivector/kaldi-ivector.a  
   ${KALDI_DIR}/src/nnet3/kaldi-nnet3.a
+  ${KALDI_DIR}/src/cudamatrix/kaldi-cudamatrix.a
   ${KALDI_DIR}/src/decoder/kaldi-decoder.a
   ${KALDI_DIR}/src/lat/kaldi-lat.a
   ${KALDI_DIR}/src/hmm/kaldi-hmm.a
@@ -72,11 +55,14 @@ set(LDADD_STATIC
   ${KALDI_DIR}/src/online2/kaldi-online2.a
   ${KALDI_DIR}/src/gmm/kaldi-gmm.a
   ${KALDI_DIR}/src/tree/kaldi-tree.a
-  #${KALDI_DIR}/tools/openfst/lib/libfst.a
-  -L${KALDI_DIR}/tools/openfst/lib  ### TODO !!!
-  -lfst
-  #dynamic
-  -lpthread
+  ${KALDI_DIR}/tools/openfst/lib/libfst.a
+  )
+
+set(LDADD_CUDA
+  /usr/local/cuda/lib64/libcublas.so
+  /usr/local/cuda/lib64/libcurand.so
+  /usr/local/cuda/lib64/libcudart.so
+  /usr/local/cuda/lib64/libcusparse.so  
   )
 
 IF(CMAKE_HOST_APPLE)
@@ -87,18 +73,43 @@ endif()
 set(ATLASLIBS 
   ${Accelerate_UNIT} -ldl
   )
-target_compile_options(${LIBASR} PUBLIC -fPIC)
 ELSE()
 set(ATLASLIBS 
-    /usr/lib/libatlas.so.3 
-    /usr/lib/libf77blas.so.3 
-    /usr/lib/libcblas.so.3 
-    /usr/lib/liblapack_atlas.so.3 
-    -Wl,-rpath=/usr/lib
-    )
+  /usr/lib/libatlas.so.3 
+  /usr/lib/libf77blas.so.3 
+  /usr/lib/libcblas.so.3 
+  /usr/lib/liblapack_atlas.so.3 
+  )
+ENDIF()
+ENDIF ()
+
+
+################# cyVoice_LIB ######################
+set(LIBASR asr)
+set(LIBASR_static asrs)
+
+set(libasr_SOURCES
+    ${TOP_DIR}/libasr.cpp
+    ${TOP_DIR}/nnet3-decoding.cpp
+)
+
+add_library(${LIBASR} SHARED ${libasr_SOURCES})
+add_library(${LIBASR_static} STATIC ${libasr_SOURCES})
+ 
+set_target_properties(${LIBASR_static} PROPERTIES OUTPUT_NAME ${LIBASR})
+set_target_properties(${LIBASR} PROPERTIES CLEAN_DIRECT_OUTPUT 1)
+set_target_properties(${LIBASR_static} PROPERTIES CLEAN_DIRECT_OUTPUT 1)
+
+IF (WIN32)
+
+ELSE ()
+IF(CMAKE_HOST_APPLE)
+target_compile_options(${LIBASR} PUBLIC -fPIC)
+ELSE()
 target_compile_options(${LIBASR} PUBLIC -shared -fPIC)
 ENDIF()
-target_link_libraries(${LIBASR} ${LDADD_STATIC} ${ATLASLIBS})
+target_link_libraries(${LIBASR} ${LDADD_KALDI_STATIC} ${ATLASLIBS} ${LDADD_CUDA} -lpthread)
+target_link_libraries(${LIBASR_static} ${LDADD_KALDI_STATIC} ${ATLASLIBS} ${LDADD_CUDA} -lpthread -ldl)
 ENDIF ()
 
 ################# LIBTEST_APP ######################
@@ -113,25 +124,16 @@ IF (WIN32)
 
 ELSE ()  ## UNIX
 IF(CMAKE_HOST_APPLE)
-target_compile_options(${LIBTEST} PUBLIC -fPIC)
 target_link_libraries(${LIBTEST} ${LIBASR})
 ELSE()
 include_directories(
   /usr/local/cuda/include
   )
 set(CMAKE_CXX_FLAGS "-DHAVE_CUDA=1 ${CMAKE_CXX_FLAGS}")
-target_compile_options(${LIBTEST} PUBLIC -shared -fPIC)
-set(LDADD_CUDA
-  -L/usr/local/cuda/lib64
-  -lcublas
-  -lcurand
-  -lcudart
-  -lcusparse
-  )
-target_link_libraries(${LIBTEST} ${LIBASR} ${LDADD_CUDA})
+target_link_libraries(${LIBTEST} ${LIBASR_static})
+target_link_libraries(${LIBTEST})
 ENDIF()
 ENDIF ()
-
 
 ################# CONSOLE_APP ######################
 set(CONSOLE_APP vadtool)
@@ -140,36 +142,8 @@ set(vad_SOURCES
     ${TOP_DIR}/main.cpp
    )
 
-IF (WIN32)
-
-ELSE ()
 add_executable(${CONSOLE_APP} ${vad_SOURCES})
-#target_compile_options(${BASE_LIB} PUBLIC -shared -fPIC)
-
-set(LDADD 
-  -L${KALDI_DIR}/src/lib 
-  -lkaldi-feat 
-  -lkaldi-matrix
-  -lkaldi-base
-  -lkaldi-util
-  -lkaldi-ivector
-  -lkaldi-nnet3
-  -lkaldi-cudamatrix
-  -lkaldi-decoder
-  -lkaldi-lat
-  -lkaldi-hmm
-  -lkaldi-fstext
-  -lkaldi-transform
-  -lkaldi-online2
-  -lkaldi-gmm
-  -lkaldi-tree
-  -L${KALDI_DIR}/tools/openfst/lib
-  -lfst
-  -lpthread
-  )
-
-target_link_libraries(${CONSOLE_APP} ${LDADD})
-ENDIF ()
+target_link_libraries(${CONSOLE_APP} ${LIBASR})
 
 ################# TESTSDK_APP ######################
 IF(!CMAKE_HOST_APPLE)
@@ -189,14 +163,29 @@ include_directories(
   /usr/local/cuda/include
   )
 set(CMAKE_CXX_FLAGS "-DHAVE_CUDA=1 ${CMAKE_CXX_FLAGS}")
-target_compile_options(${TESTSDK} PUBLIC -shared -fPIC)
-set(LDADD_CUDA
-  -L/usr/local/cuda/lib64
-  -lcublas
-  -lcurand
-  -lcudart
-  -lcusparse
-  )
-target_link_libraries(${TESTSDK} ${LIBASR} ${LDADD_CUDA} ${LDTIEG})
+target_link_libraries(${TESTSDK} ${LIBASR} ${LDTIEG})
 ENDIF()
 ENDIF ()
+
+################# CYASR_APP ######################
+set(CYTEST cyasr)
+set(cyasr_SOURCES
+    ${TOP_DIR}/cyasr/console.cpp    
+)
+
+add_executable(${CYTEST} ${cyasr_SOURCES})
+
+IF (WIN32)
+
+ELSE ()  ## UNIX
+IF(CMAKE_HOST_APPLE)
+target_link_libraries(${CYTEST} ${LIBASR})
+ELSE()
+include_directories(
+  /usr/local/cuda/include
+  )
+set(CMAKE_CXX_FLAGS "-DHAVE_CUDA=1 ${CMAKE_CXX_FLAGS}")
+target_link_libraries(${CYTEST} ${LIBASR})
+ENDIF()
+ENDIF ()
+
